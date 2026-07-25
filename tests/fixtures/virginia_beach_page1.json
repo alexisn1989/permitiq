@@ -1,0 +1,104 @@
+{
+  "objectIdFieldName": "OBJECTID",
+  "fields": [
+    {"name": "PermitNumber", "type": "esriFieldTypeString"},
+    {"name": "PermitType", "type": "esriFieldTypeString"},
+    {"name": "ApplicationDate", "type": "esriFieldTypeString"},
+    {"name": "IssueDate", "type": "esriFieldTypeString"},
+    {"name": "FinalDate", "type": "esriFieldTypeString"},
+    {"name": "Status", "type": "esriFieldTypeString"},
+    {"name": "WorkDesc", "type": "esriFieldTypeString"},
+    {"name": "StreetAddress", "type": "esriFieldTypeString"},
+    {"name": "AddressUnit", "type": "esriFieldTypeString"},
+    {"name": "City", "type": "esriFieldTypeString"},
+    {"name": "State", "type": "esriFieldTypeString"},
+    {"name": "Zip", "type": "esriFieldTypeString"}
+  ],
+  "exceededTransferLimit": false,
+  "features": [
+    {
+      "attributes": {
+        "PermitNumber": "2023-ELER-00001",
+        "PermitType": "Electrical",
+        "ApplicationDate": "2023/01/01",
+        "IssueDate": "2023/01/03",
+        "FinalDate": "2023/04/27",
+        "Status": "Closed",
+        "WorkDesc": "We are applying to build our 2018 code approved Duplex 25 building plans",
+        "StreetAddress": "110 58TH ST",
+        "AddressUnit": "",
+        "City": "Virginia Beach",
+        "State": "VA",
+        "Zip": "23451",
+        "GPIN": "24198122130000",
+        "ConstructionType": "Wood Frame",
+        "WorkType": "New",
+        "CreatedBy": "portalUser1",
+        "OBJECTID": 1
+      }
+    },
+    {
+      "attributes": {
+        "PermitNumber": "2025-PLBR-00001",
+        "PermitType": "Plumbing",
+        "ApplicationDate": "2025/01/01",
+        "IssueDate": "2025/01/05",
+        "FinalDate": "",
+        "Status": "Active",
+        "WorkDesc": "Water heater replacement",
+        "StreetAddress": "500 LASKIN RD",
+        "AddressUnit": "APT 3",
+        "City": "Virginia Beach",
+        "State": "VA",
+        "Zip": "23451",
+        "GPIN": "",
+        "ConstructionType": "",
+        "WorkType": "Repair",
+        "CreatedBy": "portalUser2",
+        "OBJECTID": 2
+      }
+    },
+    {
+      "attributes": {
+        "PermitNumber": "2025-BDRA-00002",
+        "PermitType": "Building",
+        "ApplicationDate": "2025/03/12",
+        "IssueDate": "",
+        "FinalDate": "",
+        "Status": "Pending Revisions",
+        "WorkDesc": "Deck addition",
+        "StreetAddress": "12 SANDBRIDGE RD",
+        "AddressUnit": "",
+        "City": "Virginia Beach",
+        "State": "VA",
+        "Zip": "23456",
+        "GPIN": "",
+        "ConstructionType": "",
+        "WorkType": "Addition",
+        "CreatedBy": "portalUser3",
+        "OBJECTID": 3
+      }
+    },
+    {
+      "attributes": {
+        "PermitNumber": "",
+        "PermitType": "Building",
+        "ApplicationDate": "2025/04/01",
+        "IssueDate": "",
+        "FinalDate": "",
+        "Status": "Pending",
+        "WorkDesc": "No permit number on this row",
+        "StreetAddress": "1 NO ID AVE",
+        "AddressUnit": "",
+        "City": "Virginia Beach",
+        "State": "VA",
+        "Zip": "23451",
+        "GPIN": "",
+        "ConstructionType": "",
+        "WorkType": "New",
+        "CreatedBy": "portalUser4",
+        "OBJECTID": 4
+      }
+    }
+  ]
+}

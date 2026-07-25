@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PermitIQ — Hampton Roads Building Permits</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%86%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◆</span>
+    <h1>PermitIQ</h1>
+    <span class="tagline">Building permit map · Hampton Roads</span>
+  </div>
+  <div class="topbar-actions">
+    <span class="data-as-of" id="data-as-of"></span>
+    <button id="sources-btn" class="btn ghost">Data sources</button>
+    <a id="export-btn" class="btn ghost" href="/api/export.geojson" download>Export GeoJSON</a>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="locality-chips" id="locality-chips" aria-label="Filter by locality"></div>
+
+    <section class="stats stats-wide" id="stats" aria-label="Permit summary"></section>
+
+    <section class="legend" id="legend" aria-label="Status legend"></section>
+
+    <section class="filters">
+      <input id="filter-q" type="search" placeholder="Search address, description, contractor…" autocomplete="off">
+      <div class="filter-row">
+        <select id="filter-type" aria-label="Filter by permit type">
+          <option value="">All permit types</option>
+        </select>
+        <select id="filter-status" aria-label="Filter by status">
+          <option value="">All statuses</option>
+        </select>
+      </div>
+      <div class="filter-row">
+        <input id="filter-issued-from" type="date" aria-label="Issued after">
+        <input id="filter-issued-to" type="date" aria-label="Issued before">
+      </div>
+      <button class="linklike filter-clear" id="filter-clear-btn">Clear filters</button>
+    </section>
+
+    <div class="page-banner" id="page-banner" hidden>
+      <span id="page-banner-text"></span>
+      <button class="btn small" id="load-more-btn">Load more</button>
+    </div>
+
+    <ul class="permit-list" id="permit-list"></ul>
+  </aside>
+
+  <div id="map" class="map"></div>
+</main>
+
+<div class="drawer-backdrop" id="drawer-backdrop" hidden>
+  <div class="drawer" id="drawer" role="dialog" aria-label="Permit details">
+    <button class="btn small drawer-close" id="drawer-close">Close</button>
+    <div id="drawer-body"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="sources-modal" hidden>
+  <div class="modal" role="dialog" aria-label="Data sources">
+    <button class="btn small modal-close" id="sources-close">Close</button>
+    <h2>Data sources &amp; methodology</h2>
+    <p class="disclaimer">
+      PermitIQ republishes normalized public permit records from each city's own open-data
+      system. The original agency record is always authoritative — if something here looks
+      wrong, check the source link on that city's card below. Some records lack map
+      coordinates (their address didn't resolve to a location yet, or isn't a mappable street
+      address at all); missing data does not mean no permit exists. Permit types and statuses
+      use each city's own vocabulary, so the same word can mean different things in different
+      cities. Chesapeake and Portsmouth have real permit systems but no confirmed open dataset
+      yet; Hampton, Suffolk, and Newport News are not yet covered at all.
+    </p>
+    <div id="source-cards"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

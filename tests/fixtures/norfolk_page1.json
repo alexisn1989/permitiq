@@ -1,0 +1,54 @@
+[
+  {
+    "permit_number": "F25-00156",
+    "address": "243 W BUTE STREET",
+    "gpin": "1427878551",
+    "tax_account": "35514200",
+    "type": "Fire Protection",
+    "status": "Cancelled",
+    "application_date": "2025-06-06T00:00:00.000",
+    "issue_date": "2025-02-04T00:00:00.000",
+    "expiration_date": "2025-08-03T00:00:00.000",
+    "finaled_date": "2025-07-16T00:00:00.000",
+    "total_balance": "0.0",
+    "square_footage": "27370.0",
+    "code_edition": "2018",
+    "use_class": "Commercial",
+    "work_type": "New",
+    "use_type": "Commercial",
+    "structure": "New"
+  },
+  {
+    "permit_number": "B25-01022",
+    "address": "512 GRANBY ST",
+    "type": "Building",
+    "status": "Issued",
+    "application_date": "2025-05-01T00:00:00.000",
+    "issue_date": "2025-05-10T00:00:00.000",
+    "work_type": "Alteration",
+    "use_type": "Residential"
+  },
+  {
+    "permit_number": "B25-01099",
+    "address": "88 COLLEY AVE",
+    "type": "Building",
+    "status": "Finaled",
+    "application_date": "2025-03-15T00:00:00.000",
+    "issue_date": "2025-03-20T00:00:00.000",
+    "finaled_date": "2025-06-01T00:00:00.000",
+    "work_type": "New"
+  },
+  {
+    "address": "NO PERMIT NUMBER HERE",
+    "type": "Building",
+    "status": "Under Review",
+    "application_date": "2025-07-01T00:00:00.000"
+  },
+  {
+    "permit_number": "Z25-00042",
+    "address": "1 OCEAN VIEW AVE",
+    "type": "Zoning",
+    "status": "Under Review",
+    "application_date": "2025/06/15"
+  }
+]
