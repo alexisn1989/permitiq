@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="/static/logo-icon.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
 
@@ -89,6 +89,10 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="/static/app.js"></script>
+<!-- No build step, so app.js/style.css have no content hash -- browsers can
+     and do cache them aggressively. Bump ?v=N (here and on style.css above)
+     whenever either file changes, or a returning visitor's old cached copy
+     will keep running silently with no error. -->
+<script src="/static/app.js?v=2"></script>
 </body>
 </html>
