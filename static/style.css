@@ -45,8 +45,8 @@ body { display: flex; flex-direction: column; }
   flex-wrap: wrap;
 }
 
-.brand { display: flex; align-items: baseline; gap: 0.6rem; }
-.brand-mark { color: var(--accent); font-size: 1.15rem; }
+.brand { display: flex; align-items: center; gap: 0.6rem; }
+.brand-mark { height: 34px; width: auto; display: block; }
 .brand h1 { margin: 0; font-size: 1.2rem; letter-spacing: 0.02em; }
 .tagline { color: var(--muted); font-size: 0.82rem; }
 .data-as-of { color: var(--muted); font-size: 0.76rem; }

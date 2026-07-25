@@ -1,4 +1,6 @@
-# PermitIQ
+<p align="center">
+  <img src="static/logo.png" alt="PermitIQ" width="360">
+</p>
 
 **A building-permit intelligence platform for Hampton Roads, Virginia — built on real government open data, with a hard rule against fabricating anything.**
 
