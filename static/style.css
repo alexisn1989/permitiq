@@ -225,11 +225,17 @@ input:focus, select:focus, textarea:focus {
 .permit-item:hover { background: var(--panel-2); }
 .permit-item.selected { background: var(--panel-2); border-color: var(--accent); }
 
-.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-top: 4px; }
-.dot.active_pending { background: var(--amber); }
-.dot.issued { background: var(--accent); }
-.dot.finaled_closed { background: var(--green); }
-.dot.expired_void { background: var(--gray); }
+/* Status color semantic: blue = in the future (not yet started), green =
+   ongoing (issued, work active), gray = done/closed, red = expired/void. */
+.dot {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1;
+}
+.dot.active_pending { background: var(--accent); }
+.dot.issued { background: var(--green); }
+.dot.finaled_closed { background: var(--gray); }
+.dot.expired_void { background: var(--red); }
 .dot.other { background: var(--purple); }
 
 .permit-item .meta { min-width: 0; }
@@ -274,10 +280,10 @@ input:focus, select:focus, textarea:focus {
   display: inline-block; font-size: 0.7rem; font-weight: 700;
   padding: 2px 8px; border-radius: 999px; margin-bottom: 10px;
 }
-.badge.active_pending { background: rgba(229, 168, 59, 0.16); color: var(--amber); }
-.badge.issued { background: rgba(79, 142, 247, 0.16); color: var(--accent); }
-.badge.finaled_closed { background: rgba(52, 192, 124, 0.16); color: var(--green); }
-.badge.expired_void { background: rgba(125, 135, 152, 0.18); color: var(--gray); }
+.badge.active_pending { background: rgba(79, 142, 247, 0.16); color: var(--accent); }
+.badge.issued { background: rgba(52, 192, 124, 0.16); color: var(--green); }
+.badge.finaled_closed { background: rgba(125, 135, 152, 0.18); color: var(--gray); }
+.badge.expired_void { background: rgba(224, 92, 92, 0.16); color: var(--red); }
 .badge.other { background: rgba(165, 109, 226, 0.16); color: var(--purple); }
 
 .drawer dl { margin: 0; }
@@ -348,6 +354,16 @@ input:focus, select:focus, textarea:focus {
   box-shadow: var(--shadow);
 }
 .toast[hidden] { display: none; }
+
+/* ---------- work-category map marker (L.divIcon) ---------- */
+.permit-marker { background: none; border: none; }
+.marker-badge {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.85);
+}
 
 /* ---------- leaflet popup theming ---------- */
 .leaflet-popup-content-wrapper, .leaflet-popup-tip {

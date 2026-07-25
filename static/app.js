@@ -5,11 +5,13 @@
    synced by run_ingest.py, never user-edited here. */
 "use strict";
 
+// blue = in the future (not yet started), green = ongoing (issued/active),
+// gray = done/closed, red = expired/void.
 const STATUS_BUCKET_COLORS = {
-  active_pending: "#e5a83b",
-  issued: "#4f8ef7",
-  finaled_closed: "#34c07c",
-  expired_void: "#7d8798",
+  active_pending: "#4f8ef7",
+  issued: "#34c07c",
+  finaled_closed: "#7d8798",
+  expired_void: "#e05c5c",
   other: "#a56de2",
 };
 const STATUS_BUCKET_LABELS = {
@@ -21,6 +23,97 @@ const STATUS_BUCKET_LABELS = {
 };
 const STATUS_BUCKET_ORDER = ["active_pending", "issued", "finaled_closed", "expired_void", "other"];
 const PAGE_SIZE = 1000;
+
+// Work-category classification, built from the real distinct permit_type
+// values observed across both localities (2026-07-25) -- not a guess.
+// Norfolk: Building, Electrical, Zoning, Mechanical, Plumbing, Fire
+// Protection, Short Term Rental, Sign, Demolition, Occupancy Certificate
+// (+2 variants), Operating, New Elevator, Portable Storage Unit, Amusement
+// Device. Virginia Beach: Building, Mechanical, Electrical, Moving and
+// Hauling, Plumbing, Utility, Gas, Elevator, Complaint, Fire, Civil,
+// Amusement. Neither source has a dedicated "Roof" or "Addition" field --
+// those are sub-categories WITHIN "Building", detectable only by matching
+// real description text (474 real permits say "Reroof/Solar Panels"; 383+
+// say "addition"/"expansion"). Flagged as inferred, not treated as if the
+// source itself categorized them.
+const WORK_CATEGORY_ICONS = {
+  electrical: "⚡",
+  plumbing: "💧",
+  mechanical: "🌀",
+  gas: "🔥",
+  fire: "🧯",
+  roof: "🔺",       // inferred from description text, see workCategory()
+  addition: "🏗️",   // inferred from description text, see workCategory()
+  building: "🏠",
+  zoning: "📐",
+  demolition: "🔨",
+  elevator: "🛗",
+  sign: "🪧",
+  occupancy: "📋",
+  rental: "🔑",
+  amusement: "🎡",
+  utility: "🔌",
+  hauling: "🚚",
+  civil: "🛣️",
+  complaint: "⚠️",
+  operating: "⚙️",
+  storage: "📦",
+  other: "📍",
+};
+const WORK_CATEGORY_LABELS = {
+  electrical: "Electrical",
+  plumbing: "Plumbing",
+  mechanical: "Mechanical / HVAC",
+  gas: "Gas",
+  fire: "Fire protection",
+  roof: "Roofing (inferred from description)",
+  addition: "Addition / expansion (inferred from description)",
+  building: "Building (general)",
+  zoning: "Zoning",
+  demolition: "Demolition",
+  elevator: "Elevator",
+  sign: "Sign",
+  occupancy: "Occupancy certificate",
+  rental: "Short-term rental",
+  amusement: "Amusement device",
+  utility: "Utility",
+  hauling: "Moving / hauling",
+  civil: "Civil",
+  complaint: "Complaint",
+  operating: "Operating",
+  storage: "Portable storage",
+  other: "Other / unclassified",
+};
+
+function workCategory(p) {
+  const type = (p.permit_type || "").trim().toLowerCase();
+  const desc = (p.description || "").toLowerCase();
+
+  if (type === "electrical") return "electrical";
+  if (type === "plumbing") return "plumbing";
+  if (type === "mechanical") return "mechanical";
+  if (type === "gas") return "gas";
+  if (type === "fire protection" || type === "fire") return "fire";
+  if (type === "building") {
+    if (/re-?roof|roofing/.test(desc)) return "roof";
+    if (/addition|expansion/.test(desc)) return "addition";
+    return "building";
+  }
+  if (type === "zoning") return "zoning";
+  if (type === "demolition") return "demolition";
+  if (type === "elevator" || type === "new elevator") return "elevator";
+  if (type === "sign") return "sign";
+  if (type.startsWith("occupancy certificate") || type === "temporary occupancy certificate") return "occupancy";
+  if (type === "short term rental") return "rental";
+  if (type === "amusement device" || type === "amusement") return "amusement";
+  if (type === "utility") return "utility";
+  if (type === "moving and hauling") return "hauling";
+  if (type === "civil") return "civil";
+  if (type === "complaint") return "complaint";
+  if (type === "operating") return "operating";
+  if (type === "portable storage unit") return "storage";
+  return "other";
+}
 
 // ---------- state ----------
 let permits = []; // accumulated across "load more"
@@ -35,7 +128,6 @@ const filters = {
 };
 
 // ---------- map ----------
-const canvasRenderer = L.canvas({ padding: 0.5 });
 const map = L.map("map", { zoomControl: false }).setView([36.85, -76.15], 10);
 L.control.zoom({ position: "bottomright" }).addTo(map);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
@@ -242,27 +334,54 @@ function renderList() {
     listEl.innerHTML = `<li class="empty">No permits match the current filters.</li>`;
     return;
   }
-  listEl.innerHTML = permits.map((p) => `
+  listEl.innerHTML = permits.map((p) => {
+    const category = workCategory(p);
+    return `
     <li class="permit-item ${p.id === selectedId ? "selected" : ""}" data-id="${p.id}">
-      <span class="dot ${esc(p.status_bucket)}"></span>
+      <span class="dot ${esc(p.status_bucket)}" title="${esc(WORK_CATEGORY_LABELS[category])}">${WORK_CATEGORY_ICONS[category]}</span>
       <span class="meta">
         <b>${esc(p.address || "(no address on file)")}</b>
         <span>${esc(p.permit_type || "Unknown type")} · ${esc(p.status || "Unknown status")}</span>
         <span>${esc(localityLabel(p.locality))}${p.issued_date ? " · issued " + esc(p.issued_date) : ""}</span>
       </span>
-    </li>`).join("");
+    </li>`;
+  }).join("");
 }
 
 function popupHtml(p) {
+  const category = workCategory(p);
   return `
     <div class="popup">
-      <h3>${esc(p.address || "(no address on file)")}</h3>
-      <p class="pop-sub">${esc(p.permit_type || "Unknown type")} · ${esc(localityLabel(p.locality))}</p>
+      <h3>${WORK_CATEGORY_ICONS[category]} ${esc(p.address || "(no address on file)")}</h3>
+      <p class="pop-sub">${esc(WORK_CATEGORY_LABELS[category])} · ${esc(p.permit_type || "Unknown type")} · ${esc(localityLabel(p.locality))}</p>
       <span class="badge ${esc(p.status_bucket)}">${esc(p.status || "Unknown")}</span>
       <div class="pop-actions">
         <button class="btn small" data-detail="${p.id}">View full details</button>
       </div>
     </div>`;
+}
+
+// Cache built L.divIcon instances per (category, status_bucket) pair --
+// there are only ~21 categories x 5 buckets, so this avoids rebuilding an
+// identical icon for every one of hundreds of markers on each render.
+const _iconCache = new Map();
+function markerIcon(p) {
+  const category = workCategory(p);
+  const key = category + "|" + p.status_bucket;
+  let icon = _iconCache.get(key);
+  if (!icon) {
+    const color = STATUS_BUCKET_COLORS[p.status_bucket] || STATUS_BUCKET_COLORS.other;
+    const emoji = WORK_CATEGORY_ICONS[category] || WORK_CATEGORY_ICONS.other;
+    icon = L.divIcon({
+      className: "permit-marker",
+      html: `<div class="marker-badge" style="background:${color}">${emoji}</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+      popupAnchor: [0, -14],
+    });
+    _iconCache.set(key, icon);
+  }
+  return icon;
 }
 
 function renderMarkers() {
@@ -275,13 +394,11 @@ function renderMarkers() {
     }
   }
   for (const p of mapped) {
-    const color = STATUS_BUCKET_COLORS[p.status_bucket] || STATUS_BUCKET_COLORS.other;
-    const style = { renderer: canvasRenderer, radius: 7, weight: 2, color, fillColor: color, fillOpacity: 0.55 };
     let m = markers.get(p.id);
     if (m) {
-      m.setLatLng([p.lat, p.lng]).setStyle(style).setPopupContent(popupHtml(p));
+      m.setLatLng([p.lat, p.lng]).setIcon(markerIcon(p)).setPopupContent(popupHtml(p));
     } else {
-      m = L.circleMarker([p.lat, p.lng], style).addTo(map).bindPopup(popupHtml(p));
+      m = L.marker([p.lat, p.lng], { icon: markerIcon(p) }).addTo(map).bindPopup(popupHtml(p));
       m.on("click", () => selectPermit(p.id, { pan: false, showDetail: false }));
       markers.set(p.id, m);
     }
