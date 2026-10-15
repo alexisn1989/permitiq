@@ -6,3 +6,6 @@ permits.db-wal
 permits.db-shm
 .env
 .venv/
+
+# audit output (generated data)
+reports/
