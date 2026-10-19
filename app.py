@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import flood_stats, land_use, land_use_stats
+from ingest import flood_stats, land_use, land_use_stats, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -760,6 +760,22 @@ def land_use_stats_route():
     cfg = _land_use_cfg()
     with _ro() as conn:
         return land_use_stats.compute_land_use_stats(conn, cfg)
+
+
+@app.get("/api/data-as-of")
+def data_as_of_route():
+    """Source dates recorded by the CLI writers, plus the permit observation window."""
+    with _ro() as conn:
+        return quality.data_as_of(conn)
+
+
+@app.get("/api/quality")
+def quality_route():
+    """Live coverage, unresolved cases and refresh age. Accuracy comes from
+    the latest imported tally and is withheld ("freshness": "stale") when the
+    data it was computed on has since changed."""
+    with _ro() as conn:
+        return quality.quality(conn)
 
 
 @app.get("/api/parcels/{gpin}.geojson")
