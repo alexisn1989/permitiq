@@ -241,6 +241,36 @@ python scripts/flood_report.py               # reports/flood_exposure_vb.md + .c
 - **Report definitions:** population = issued, non-void VB permits; cohort = the explicit allowlist in `config/flood_report.toml`; baseline = all issued permits. Shares use matched permits only as the denominator; `no_polygon`, `not_geocoded` and `untagged` are shown beside every row as counts. Shares are suppressed below `min_n` (20). Only context filters (`issued_from`, `issued_to`, `zip`) apply, to cohort and baseline alike. `/api/flood-stats` and `flood_report.py` share one implementation (`ingest/flood_stats.py`).
 - **Caveats:** address point ≠ building footprint; effective FIRM only; issued ≠ built; SFHA ≠ full flood risk.
 
+### Land-use approvals → permits (Virginia Beach, Stage 2)
+
+Links City Council land-use decisions (from a read-only VoteIQ export) to later building permits at the same property. It answers three questions: which approvals have no permit yet, how long approval-to-permit takes, and what flood class each approval falls in.
+
+```powershell
+# on the VoteIQ host -- read-only, standalone, changes nothing in VoteIQ
+python tools/export_vb_council_votes.py /var/data/polls.db > vb_council_votes.jsonl 2> vb_schema.txt
+
+python scripts/profile_land_use_export.py --file vb_council_votes.jsonl
+#   -> fill config/land_use.toml from that output (ships empty on purpose)
+python scripts/migrate_db.py                                      # schema v3
+python scripts/ingest_land_use_decisions.py --file vb_council_votes.jsonl --dry-run
+python scripts/ingest_land_use_decisions.py --file vb_council_votes.jsonl
+python scripts/ingest_land_use_decisions.py --geocode
+#   -> set [coverage] backfill_from + backfill_run_id to the VB backfill you actually ran
+python scripts/link_decisions_permits.py --dry-run
+python scripts/link_decisions_permits.py
+python scripts/review_land_use.py --outcomes reports/land_use_review.csv   # after filling it in
+python scripts/review_land_use.py --links reports/link_review.csv          # after filling it in
+python scripts/tag_flood_zones.py --decisions
+python scripts/land_use_report.py                                 # reports/land_use_vb.md + CSVs
+```
+
+- **Approval is never inferred.** "Vote Complete" with more yes than no votes could be a motion to deny or defer. Vote counts and the result string are stored only as evidence. A decision is approved only through `review_land_use.py --outcomes`, which requires evidence: the minutes, the IQM2 item, or the verbatim motion. Until that review is done, the lead list is empty.
+- **Source conflicts are quarantined.** If member rows for one item disagree on title, result or date, nothing is picked. Every variant is kept, and review must resolve the conflict.
+- **Coverage is verified.** The observation window starts at a named VB backfill run, checked against `ingestion_runs`, never at the oldest permit on file. It ends at the latest successful refresh. If either end is uncertain (approval before the backfill, no refresh, or a refresh older than 14 days), the status is `observation_uncertain`, never "no permit yet".
+- **Links are candidates.** Matching uses a printed GPIN (first 10 digits), an exact house number and street, or a printed house-number range. A property match may not belong to the approved project, so only `review_land_use.py --links` confirms a link. Nearby addresses go to the review file and are never linked automatically.
+- **Time to permit** has three measures: first permit application, first issued permit, and first new-construction application. Each counts once per decision (its earliest permit) and is reported twice: confirmed links (the headline) and including candidates. The report shows the median and IQR (nearest-rank); open decisions are counted but never imputed.
+- Status is defined once, in the `land_use_decision_status` view.
+
 ---
 
 ## API
@@ -260,6 +290,10 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/flood-stats` | Flood-exposure shares: cohort vs baseline, by year and ZIP (context filters only; population filters ⇒ 422) |
 | `GET /api/flood-zones/index.json` | Active flood load's display cells (bbox, bytes, etag) |
 | `GET /api/flood-zones/{x}/{y}.geojson` | One display cell (ETag / 304; 413 over the size limit) |
+| `GET /api/land-use/decisions` | Council land-use decisions with status, links and flood class (filters: `status`, `outcome`, `land_use_label`, `flood_class`, `decided_from/to`, `match_tier`) |
+| `GET /api/land-use/decisions/{key}` | One decision: addresses, linked permits with tier and state, conflicts, review |
+| `GET /api/land-use/export.csv` | Same filters; the lead list is `?status=no_candidate_permit`; every row carries the permit observation window |
+| `GET /api/land-use/stats` | Counts by status, label and year; time-to-permit blocks |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 
@@ -271,7 +305,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**245 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**296 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

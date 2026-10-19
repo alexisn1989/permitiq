@@ -19,12 +19,21 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
 FLOOD_CLASSES_STORED = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha", "no_polygon", "not_geocoded")
 FLOOD_CLASSES = FLOOD_CLASSES_STORED + ("untagged", "out_of_scope")
+
+# Stage 2 land-use linkage (schema v3). See the land_use_decision_status view.
+LAND_USE_STATUSES = (
+    "quarantined", "outcome_unverified", "not_approved", "address_unparsed", "observation_uncertain",
+    "confirmed_permit", "candidate_permit", "no_candidate_permit", "no_candidate_window_expired",
+)
+VERIFIED_OUTCOMES = ("approved", "approved_with_conditions", "denied", "deferred", "withdrawn", "other")
+OUTCOME_EVIDENCE = ("unverified", "proposed_approved", "proposed_not_approved", "unknown")
+MATCH_TIERS = ("gpin", "address_exact", "address_range", "manual")
 
 
 class DatabaseNotReady(Exception):
@@ -276,6 +285,189 @@ _SCHEMA_V2_STATEMENTS = [
 ]
 
 
+# Schema v3 (Stage 2 land-use decisions -> permits). Additive only. Approval
+# is never inferred from vote counts: decision_outcome_review (human, with
+# evidence) is the only path to an approved outcome. decision_permit_links is
+# fully derived (rebuilt by scripts/link_decisions_permits.py); the review
+# tables are human input and survive rebuilds.
+_SCHEMA_V3_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS land_use_decisions (
+        decision_key       TEXT PRIMARY KEY,
+        meeting_id         TEXT NOT NULL,
+        resolution_id      TEXT NOT NULL,
+        meeting_date       TEXT,
+        title              TEXT,
+        title_truncated    INTEGER NOT NULL DEFAULT 0,
+        result_raw         TEXT,
+        yes_count          INTEGER NOT NULL DEFAULT 0,
+        no_count           INTEGER NOT NULL DEFAULT 0,
+        absent_count       INTEGER NOT NULL DEFAULT 0,
+        abstain_count      INTEGER NOT NULL DEFAULT 0,
+        member_rows        INTEGER NOT NULL DEFAULT 0,
+        outcome_evidence   TEXT NOT NULL DEFAULT 'unverified'
+            CHECK (outcome_evidence IN ('unverified','proposed_approved','proposed_not_approved','unknown')),
+        evidence_pattern   TEXT,
+        land_use_label     TEXT NOT NULL,
+        matched_pattern    TEXT NOT NULL,
+        source_file_sha256 TEXT NOT NULL,
+        ingested_at        TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_land_use_decisions_date ON land_use_decisions(meeting_date)",
+    """
+    CREATE TABLE IF NOT EXISTS land_use_decision_conflicts (
+        decision_key  TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        field         TEXT NOT NULL CHECK (field IN ('title','result','meeting_date')),
+        variants_json TEXT NOT NULL,
+        detected_at   TEXT NOT NULL,
+        PRIMARY KEY (decision_key, field)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS land_use_decision_addresses (
+        decision_key   TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        seq            INTEGER NOT NULL,
+        source         TEXT NOT NULL DEFAULT 'title' CHECK (source IN ('title','review')),
+        raw_text       TEXT NOT NULL,
+        house_from     INTEGER,
+        house_to       INTEGER,
+        street_norm    TEXT,
+        gpin10         TEXT,
+        lat            REAL,
+        lng            REAL,
+        geocode_status TEXT,
+        geocoded_at    TEXT,
+        PRIMARY KEY (decision_key, seq),
+        CHECK (street_norm IS NOT NULL OR gpin10 IS NOT NULL)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_outcome_review (
+        decision_key        TEXT PRIMARY KEY REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        verified_outcome    TEXT NOT NULL CHECK (verified_outcome IN
+            ('approved','approved_with_conditions','denied','deferred','withdrawn','other')),
+        evidence            TEXT NOT NULL CHECK (length(trim(evidence)) > 0),
+        reviewer            TEXT NOT NULL,
+        conflict_resolution TEXT,
+        resolved_title      TEXT,
+        reviewed_at         TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS permit_coverage (
+        locality            TEXT PRIMARY KEY,
+        backfill_from       TEXT NOT NULL,
+        backfill_run_id     INTEGER NOT NULL,
+        backfill_source     TEXT NOT NULL,
+        last_refresh_at     TEXT,
+        last_refresh_run_id INTEGER,
+        link_window_months  INTEGER NOT NULL,
+        max_staleness_days  INTEGER NOT NULL,
+        computed_at         TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_permit_links (
+        decision_key        TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        permit_id           INTEGER NOT NULL REFERENCES permits(id),
+        match_tier          TEXT NOT NULL CHECK (match_tier IN ('gpin','address_exact','address_range','manual')),
+        matched_on          TEXT,
+        link_state          TEXT NOT NULL CHECK (link_state IN ('candidate','confirmed')),
+        is_new_construction INTEGER,
+        link_run_at         TEXT NOT NULL,
+        PRIMARY KEY (decision_key, permit_id),
+        CHECK (match_tier != 'manual' OR link_state = 'confirmed')
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_decision_permit_links_permit ON decision_permit_links(permit_id)",
+    """
+    CREATE TABLE IF NOT EXISTS decision_link_review (
+        decision_key TEXT NOT NULL,
+        permit_id    INTEGER NOT NULL,
+        verdict      TEXT NOT NULL CHECK (verdict IN ('confirmed','rejected')),
+        note         TEXT,
+        reviewer     TEXT NOT NULL,
+        reviewed_at  TEXT NOT NULL,
+        PRIMARY KEY (decision_key, permit_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_flood (
+        decision_key TEXT NOT NULL,
+        seq          INTEGER NOT NULL,
+        load_id      INTEGER NOT NULL REFERENCES flood_zone_loads(load_id),
+        tagged_lat   REAL,
+        tagged_lng   REAL,
+        fld_zone     TEXT,
+        zone_subty   TEXT,
+        sfha         INTEGER,
+        flood_class  TEXT NOT NULL CHECK (flood_class IN
+            ('sfha_v','sfha_a','shaded_x','matched_non_sfha','no_polygon','not_geocoded')),
+        tagged_at    TEXT NOT NULL,
+        PRIMARY KEY (decision_key, seq)
+    )
+    """,
+    # Same freshness rule as permit_flood_effective: an active VB load must
+    # exist, the tag must come from it, and the address coordinates must be
+    # the ones tagged. Zone fields are NULL unless fresh.
+    """
+    CREATE VIEW IF NOT EXISTS decision_flood_effective AS
+    SELECT s.decision_key, s.seq, s.fresh,
+      CASE WHEN s.fresh = 1 THEN s.flood_class ELSE 'untagged' END AS effective_class,
+      CASE WHEN s.fresh = 1 THEN s.fld_zone END AS fld_zone,
+      CASE WHEN s.fresh = 1 THEN s.sfha     END AS sfha
+    FROM (
+      SELECT a.decision_key, a.seq,
+             COALESCE(l.load_id IS NOT NULL AND f.decision_key IS NOT NULL AND f.load_id = l.load_id
+                      AND f.tagged_lat IS a.lat AND f.tagged_lng IS a.lng, 0) AS fresh,
+             f.flood_class, f.fld_zone, f.sfha
+      FROM land_use_decision_addresses a
+      LEFT JOIN flood_locality_dfirm m ON m.locality = 'virginia_beach'
+      LEFT JOIN flood_zone_loads    l ON l.dfirm_id = m.dfirm_id AND l.is_active = 1
+      LEFT JOIN decision_flood      f ON f.decision_key = a.decision_key AND f.seq = a.seq
+    ) s
+    """,
+    # The single definition of a decision's status (first matching rule wins).
+    # observation_uncertain precedes the link states on purpose: before the
+    # verified backfill start, or with a stale/unknown refresh, even a found
+    # permit may not be the FIRST one, so neither leads nor timings use it.
+    """
+    CREATE VIEW IF NOT EXISTS land_use_decision_status AS
+    SELECT d.decision_key, d.meeting_date, d.land_use_label, d.outcome_evidence,
+      r.verified_outcome,
+      (SELECT COUNT(*) FROM decision_permit_links k WHERE k.decision_key = d.decision_key
+                                                    AND k.link_state = 'candidate') AS n_candidate_links,
+      (SELECT COUNT(*) FROM decision_permit_links k WHERE k.decision_key = d.decision_key
+                                                    AND k.link_state = 'confirmed') AS n_confirmed_links,
+      CASE
+        WHEN EXISTS (SELECT 1 FROM land_use_decision_conflicts x WHERE x.decision_key = d.decision_key)
+             AND (r.decision_key IS NULL OR r.conflict_resolution IS NULL
+                  OR length(trim(r.conflict_resolution)) = 0)                  THEN 'quarantined'
+        WHEN r.decision_key IS NULL                                            THEN 'outcome_unverified'
+        WHEN r.verified_outcome NOT IN ('approved','approved_with_conditions') THEN 'not_approved'
+        WHEN NOT EXISTS (SELECT 1 FROM land_use_decision_addresses a
+                         WHERE a.decision_key = d.decision_key)                THEN 'address_unparsed'
+        WHEN c.locality IS NULL OR d.meeting_date IS NULL OR d.meeting_date < c.backfill_from
+             OR c.last_refresh_at IS NULL
+             OR julianday('now') - julianday(c.last_refresh_at) > c.max_staleness_days
+                                                                               THEN 'observation_uncertain'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links k WHERE k.decision_key = d.decision_key
+                                                              AND k.link_state = 'confirmed') THEN 'confirmed_permit'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links k WHERE k.decision_key = d.decision_key)
+                                                                               THEN 'candidate_permit'
+        WHEN date(d.meeting_date, '+' || c.link_window_months || ' months') < date(c.last_refresh_at)
+                                                                               THEN 'no_candidate_window_expired'
+        ELSE 'no_candidate_permit'
+      END AS status
+    FROM land_use_decisions d
+    LEFT JOIN decision_outcome_review r ON r.decision_key = d.decision_key
+    LEFT JOIN permit_coverage c ON c.locality = 'virginia_beach'
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -296,6 +488,9 @@ def init_db(db_path: Path | str | None = None) -> None:
         # v1 database. Both get the additive v2 statements.
         if current_version < 2:
             for statement in _SCHEMA_V2_STATEMENTS:
+                conn.execute(statement)
+        if current_version < 3:
+            for statement in _SCHEMA_V3_STATEMENTS:
                 conn.execute(statement)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

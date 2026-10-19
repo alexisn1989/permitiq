@@ -423,3 +423,4 @@ input:focus, select:focus, textarea:focus {
 .flood-badge.sfha_a { border-color: #3d8bfd; color: #3d8bfd; }
 .flood-badge.shaded_x { border-color: #f2c94c; color: #f2c94c; }
 .flood-badge.no_polygon, .flood-badge.untagged { border-style: dashed; }
+.landuse-links { margin-top: 6px; font-size: 0.72rem; color: var(--muted); }

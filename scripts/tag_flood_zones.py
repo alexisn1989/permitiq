@@ -11,6 +11,7 @@ Usage:
   python scripts/tag_flood_zones.py --dry-run
   python scripts/tag_flood_zones.py
   python scripts/tag_flood_zones.py --all     # recompute every in-scope permit
+  python scripts/tag_flood_zones.py --decisions   # Stage 2: land-use decision address points
 """
 
 from __future__ import annotations
@@ -43,10 +44,50 @@ def class_counts(conn, locality: str) -> Counter:
         "WHERE p.locality = ? GROUP BY e.effective_class", (locality,)).fetchall()))
 
 
+DECISION_UPSERT = """
+    INSERT INTO decision_flood (decision_key, seq, load_id, tagged_lat, tagged_lng, fld_zone, zone_subty, sfha,
+                                flood_class, tagged_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(decision_key, seq) DO UPDATE SET
+        load_id = excluded.load_id, tagged_lat = excluded.tagged_lat, tagged_lng = excluded.tagged_lng,
+        fld_zone = excluded.fld_zone, zone_subty = excluded.zone_subty, sfha = excluded.sfha,
+        flood_class = excluded.flood_class, tagged_at = excluded.tagged_at
+"""
+
+
+def tag_decisions(conn, load_id: int, index, dry_run: bool, everything: bool) -> None:
+    """Stage 2: tag land-use decision address points (same index, same
+    freshness rule via the decision_flood_effective view)."""
+    todo = conn.execute(
+        "SELECT a.decision_key, a.seq, a.lat, a.lng, e.effective_class FROM land_use_decision_addresses a "
+        "JOIN decision_flood_effective e ON e.decision_key = a.decision_key AND e.seq = a.seq "
+        "WHERE e.fresh = 0 OR ?", (int(everything),)).fetchall()
+    ts = db_module.now_iso()
+    transitions: Counter = Counter()
+    rows = []
+    for r in todo:
+        cls, zone = index.classify(r["lat"], r["lng"])
+        transitions[f"{r['effective_class']} -> {cls}"] += 1
+        rows.append((r["decision_key"], r["seq"], load_id, r["lat"], r["lng"], zone.fld_zone if zone else None,
+                     zone.zone_subty if zone else None, zone.sfha if zone else None, cls, ts))
+    print(f"land-use decision addresses: {len(todo)} to tag")
+    for k, n in sorted(transitions.items(), key=lambda kv: -kv[1]):
+        print(f"  {n:>6}  {k}")
+    if dry_run:
+        print("--dry-run: nothing written")
+        return
+    conn.executemany(DECISION_UPSERT, rows)
+    stale = conn.execute("SELECT COUNT(*) FROM decision_flood_effective WHERE fresh = 0").fetchone()[0]
+    if stale:
+        raise SystemExit(f"[FATAL] {stale} decision address(es) still untagged -- rolled back")
+    print("  0 decision addresses untagged")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Tag permits with FEMA flood classes")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--all", action="store_true", help="Recompute every in-scope permit, not just stale ones")
+    p.add_argument("--decisions", action="store_true", help="Tag land-use decision addresses instead of permits")
     args = p.parse_args(argv)
 
     with db_module.db() as conn:
@@ -64,6 +105,10 @@ def main(argv=None) -> int:
                      for r in conn.execute("SELECT id, fld_zone, zone_subty, sfha_tf, geom_geojson FROM flood_zones "
                                            "WHERE load_id = ?", (load_id,))]
             index = flood.FloodIndex(zones)
+            if args.decisions:
+                if locality == "virginia_beach":
+                    tag_decisions(conn, load_id, index, args.dry_run, args.all)
+                continue
             before = class_counts(conn, locality)
             todo = conn.execute(
                 "SELECT p.id, p.lat, p.lng, e.effective_class FROM permits p "

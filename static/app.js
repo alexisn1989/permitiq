@@ -662,5 +662,104 @@ $("flood-sfha-chip").addEventListener("click", () => {
 });
 renderFloodControls();
 
+// ---------- Council land-use decisions (Stage 2) ----------
+// Status comes from the API (land_use_decision_status view); approval only
+// from human review, so most decisions show as "outcome unverified".
+const LANDUSE_STATUS = {
+  no_candidate_permit: { label: "Approved, no permit yet", color: "#2ecc71" },
+  candidate_permit: { label: "Candidate permit (unconfirmed)", color: "#f2c94c" },
+  confirmed_permit: { label: "Permit confirmed", color: "#3d8bfd" },
+  no_candidate_window_expired: { label: "No permit, window expired", color: "#93a0b8" },
+  observation_uncertain: { label: "Permit window uncertain", color: "#b07cff" },
+  outcome_unverified: { label: "Outcome unverified", color: "#6b7689" },
+  not_approved: { label: "Not approved", color: "#e0457b" },
+  address_unparsed: { label: "No address", color: "#6b7689" },
+  quarantined: { label: "Quarantined (source conflict)", color: "#e67e22" },
+};
+const landUseLayer = L.layerGroup();
+// Own pane above permit markers so decisions are never hidden under them.
+map.createPane("landuse").style.zIndex = 650;
+let landUseLeadsOnly = false;
+let landUseMeta = { count: 0, mapped: 0, coverage: null };
+
+function landUsePopup(d) {
+  const st = LANDUSE_STATUS[d.status] || { label: d.status };
+  return `
+    <div class="popup">
+      <h3>${esc(d.address_text || "(no address extracted)")}</h3>
+      <p class="pop-sub">${esc(d.land_use_label)} · Council ${esc(d.meeting_date || "date unknown")}</p>
+      <span class="flood-badge">${esc(st.label)}</span>
+      ${d.flood_class ? `<span class="flood-badge ${esc(d.flood_class)}">${esc(FLOOD_CLASS_LABELS[d.flood_class] || d.flood_class)}</span>` : ""}
+      <p class="pop-sub">${esc((d.title || "").slice(0, 220))}${d.title_truncated ? "…" : ""}</p>
+      <p class="pop-sub">Votes: ${esc(d.yes_count)} yes · ${esc(d.no_count)} no · ${esc(d.absent_count)} absent
+        ${d.verified_outcome ? " · verified: " + esc(d.verified_outcome) : " · outcome not verified"}</p>
+      <div class="landuse-links" data-key="${esc(d.decision_key)}">Loading linked permits…</div>
+    </div>`;
+}
+
+async function fillLandUseLinks(key, el) {
+  try {
+    const res = await api(`/api/land-use/decisions/${encodeURIComponent(key)}`);
+    el.innerHTML = res.links.length
+      ? res.links.map((l) => `<div>${esc(l.link_state)} · ${esc(l.match_tier)} · ${esc(l.source_permit_id)} ${esc(l.permit_type || "")} applied ${esc(l.applied_date || "?")}</div>`).join("")
+      : "No linked permits";
+  } catch (err) {
+    el.textContent = `Could not load links: ${err.message}`;
+  }
+}
+
+function renderLandUseControls() {
+  $("landuse-leads-chip").classList.toggle("active", landUseLeadsOnly);
+  if (!$("landuse-layer-toggle").checked) { $("landuse-legend").innerHTML = ""; return; }
+  const cov = landUseMeta.coverage;
+  $("landuse-legend").innerHTML = Object.entries(LANDUSE_STATUS).map(([, v]) => `
+    <span class="flood-legend-item"><span class="flood-swatch" style="background:${v.color}"></span>${esc(v.label)}</span>`).join("")
+    + `<span class="flood-legend-item">${esc(landUseMeta.mapped)} of ${esc(landUseMeta.count)} decisions mapped`
+    + (cov ? ` · permits observed ${esc(cov.backfill_from)} – ${esc(cov.last_refresh_at || "unknown")}` : " · permit window not recorded")
+    + `</span>`;
+}
+
+async function loadLandUse() {
+  landUseLayer.clearLayers();
+  const q = landUseLeadsOnly ? "?status=no_candidate_permit&limit=500" : "?limit=500";
+  try {
+    const res = await api(`/api/land-use/decisions${q}`);
+    const mapped = res.decisions.filter((d) => d.lat != null);
+    landUseMeta = { count: res.count, mapped: mapped.length, coverage: res.coverage };
+    for (const d of mapped) {
+      const st = LANDUSE_STATUS[d.status] || { color: "#888" };
+      L.circleMarker([d.lat, d.lng], { pane: "landuse", radius: 8, color: "#0b1220", weight: 1.5, fillColor: st.color, fillOpacity: 0.95 })
+        .bindPopup(landUsePopup(d))
+        .on("popupopen", (e) => {
+          const el = e.popup.getElement().querySelector(".landuse-links");
+          if (el) fillLandUseLinks(el.dataset.key, el);
+        })
+        .addTo(landUseLayer);
+    }
+  } catch (err) {
+    toast(`Land-use layer unavailable: ${err.message}`, true);
+  }
+  renderLandUseControls();
+}
+
+$("landuse-layer-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    landUseLayer.addTo(map);
+    loadLandUse();
+  } else {
+    map.removeLayer(landUseLayer);
+    renderLandUseControls();
+  }
+});
+$("landuse-leads-chip").addEventListener("click", () => {
+  landUseLeadsOnly = !landUseLeadsOnly;
+  if (!$("landuse-layer-toggle").checked) {
+    $("landuse-layer-toggle").checked = true;
+    landUseLayer.addTo(map);
+  }
+  loadLandUse();
+});
+renderLandUseControls();
+
 // ---------- boot ----------
 boot();

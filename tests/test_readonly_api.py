@@ -27,7 +27,8 @@ from ingest.common import NormalizedPermit, upsert_permits  # noqa: E402
 client = TestClient(app_module.app)
 
 READ_ROUTES = ["/health", "/api/permits", "/api/stats", "/api/facets", "/api/data-status",
-               "/api/export.geojson", "/api/export.csv", "/api/flood-stats", "/api/flood-zones/index.json"]
+               "/api/export.geojson", "/api/export.csv", "/api/flood-stats", "/api/flood-zones/index.json",
+               "/api/land-use/decisions", "/api/land-use/export.csv", "/api/land-use/stats"]
 
 
 def test_importing_app_creates_no_database_file(tmp_path):

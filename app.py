@@ -38,10 +38,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import flood_stats
+from ingest import flood_stats, land_use, land_use_stats
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LAND_USE_CONFIG_PATH = Path(os.getenv("LAND_USE_CONFIG", os.path.join(BASE_DIR, "config", "land_use.toml")))
 FLOOD_CONFIG_PATH = Path(os.getenv("FLOOD_REPORT_CONFIG", os.path.join(BASE_DIR, "config", "flood_report.toml")))
 
 app = FastAPI(title="PermitIQ", version="1.1.0")
@@ -231,7 +232,8 @@ def health():
         with db_module.db_readonly() as conn:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-        required = {"permits", "ingestion_runs", "geocode_cache", "permit_flood", "permit_flood_effective"}
+        required = {"permits", "ingestion_runs", "geocode_cache", "permit_flood", "permit_flood_effective",
+                    "land_use_decisions", "land_use_decision_status"}
         if not required.issubset(tables):
             return JSONResponse({"status": "error", "database": "schema_invalid"}, status_code=503)
         return {"status": "ok", "database": "ok", "schema_version": version}
@@ -539,6 +541,179 @@ def flood_stats_route(
             return flood_stats.compute_flood_stats(conn, cohort_cfg, issued_from, issued_to, zip)
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: land-use decisions -> permits (read-only). Status comes only from
+# the land_use_decision_status view; approval only from human review.
+# ---------------------------------------------------------------------------
+DECISION_FIELDS = (
+    "decision_key", "meeting_date", "title", "title_truncated", "land_use_label", "result_raw",
+    "yes_count", "no_count", "absent_count", "abstain_count", "outcome_evidence", "verified_outcome",
+    "status", "n_candidate_links", "n_confirmed_links", "address_text", "lat", "lng",
+    "flood_class", "fld_zone", "flood_source",
+)
+DECISION_SQL = """
+    SELECT d.decision_key, d.meeting_date, d.title, d.title_truncated, d.land_use_label, d.result_raw,
+           d.yes_count, d.no_count, d.absent_count, d.abstain_count, d.outcome_evidence,
+           s.verified_outcome, s.status, s.n_candidate_links, s.n_confirmed_links,
+           (SELECT a.raw_text FROM land_use_decision_addresses a WHERE a.decision_key = d.decision_key
+            ORDER BY a.seq LIMIT 1) AS address_text,
+           (SELECT a.lat FROM land_use_decision_addresses a WHERE a.decision_key = d.decision_key
+            AND a.lat IS NOT NULL ORDER BY a.seq LIMIT 1) AS lat,
+           (SELECT a.lng FROM land_use_decision_addresses a WHERE a.decision_key = d.decision_key
+            AND a.lat IS NOT NULL ORDER BY a.seq LIMIT 1) AS lng
+    FROM land_use_decisions d JOIN land_use_decision_status s ON s.decision_key = d.decision_key
+"""
+DECISION_OUTCOME_FILTERS = db_module.VERIFIED_OUTCOMES + ("unverified",)
+MAX_DECISION_PAGE = 500
+
+
+def parse_tokens(values: Optional[list[str]], allowed: Optional[tuple[str, ...]], name: str) -> list[str]:
+    """Same parsing as flood_class: repeated params and/or comma lists,
+    trimmed, de-duplicated; an unknown token is a 422."""
+    out: list[str] = []
+    for value in values or []:
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if allowed is not None and token not in allowed:
+                raise HTTPException(422, f"unknown {name} {token!r} -- must be one of {allowed}")
+            if token not in out:
+                out.append(token)
+    return out
+
+
+def _land_use_cfg() -> dict:
+    try:
+        return land_use.load_config(LAND_USE_CONFIG_PATH)
+    except flood_stats.ConfigError:
+        raise HTTPException(503, "land-use config is missing or invalid") from None
+
+
+def _decisions(conn, status, outcome, land_use_label, flood_class, decided_from, decided_to, match_tier):
+    _validate_date(decided_from, "decided_from")
+    _validate_date(decided_to, "decided_to")
+    statuses = parse_tokens(status, db_module.LAND_USE_STATUSES, "status")
+    outcomes = parse_tokens(outcome, DECISION_OUTCOME_FILTERS, "outcome")
+    labels = parse_tokens(land_use_label, None, "land_use_label")
+    floods = parse_tokens(flood_class, db_module.FLOOD_CLASSES, "flood_class")
+    tiers = parse_tokens(match_tier, db_module.MATCH_TIERS, "match_tier")
+    clauses, params = [], []
+
+    def any_of(expr, values):
+        clauses.append(f"{expr} IN ({','.join('?' * len(values))})")
+        params.extend(values)
+
+    if statuses:
+        any_of("s.status", statuses)
+    if outcomes:
+        any_of("COALESCE(s.verified_outcome, 'unverified')", outcomes)
+    if labels:
+        any_of("d.land_use_label", labels)
+    if decided_from:
+        clauses.append("d.meeting_date >= ?")
+        params.append(decided_from)
+    if decided_to:
+        clauses.append("d.meeting_date <= ?")
+        params.append(decided_to)
+    if tiers:
+        clauses.append(f"EXISTS (SELECT 1 FROM decision_permit_links k WHERE k.decision_key = d.decision_key "
+                       f"AND k.match_tier IN ({','.join('?' * len(tiers))}))")
+        params.extend(tiers)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = [dict(r) for r in conn.execute(f"{DECISION_SQL} {where} ORDER BY d.meeting_date DESC, d.decision_key",
+                                          params)]
+    flood_by_key = land_use_stats.decision_flood(conn, [r["decision_key"] for r in rows])
+    for r in rows:
+        r.update(flood_by_key[r["decision_key"]])
+    # The flood class is derived per decision (own point, else linked permits),
+    # so it is filtered after the query; decision counts are small (hundreds).
+    if floods:
+        rows = [r for r in rows if r["flood_class"] in floods]
+    return [{k: r[k] for k in DECISION_FIELDS} for r in rows]
+
+
+@app.get("/api/land-use/decisions")
+def land_use_decisions(
+    status: Optional[list[str]] = Query(default=None),
+    outcome: Optional[list[str]] = Query(default=None),
+    land_use_label: Optional[list[str]] = Query(default=None),
+    flood_class: Optional[list[str]] = Query(default=None),
+    decided_from: Optional[str] = None,
+    decided_to: Optional[str] = None,
+    match_tier: Optional[list[str]] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=MAX_DECISION_PAGE),
+    offset: int = Query(default=0, ge=0),
+):
+    with _ro() as conn:
+        rows = _decisions(conn, status, outcome, land_use_label, flood_class, decided_from, decided_to, match_tier)
+        cov = land_use_stats.coverage(conn)
+    return {"count": len(rows), "limit": limit, "offset": offset, "coverage": cov,
+            "decisions": rows[offset:offset + limit]}
+
+
+@app.get("/api/land-use/decisions/{decision_key}")
+def land_use_decision_detail(decision_key: str):
+    with _ro() as conn:
+        rows = [dict(r) for r in conn.execute(f"{DECISION_SQL} WHERE d.decision_key = ?", (decision_key,))]
+        if not rows:
+            raise HTTPException(404, "decision not found")
+        row = rows[0]
+        row.update(land_use_stats.decision_flood(conn, [decision_key])[decision_key])
+        addresses = [dict(r) for r in conn.execute(
+            "SELECT seq, source, raw_text, house_from, house_to, street_norm, gpin10, lat, lng, geocode_status "
+            "FROM land_use_decision_addresses WHERE decision_key = ? ORDER BY seq", (decision_key,))]
+        links = [dict(r) for r in conn.execute(
+            f"""SELECT k.permit_id, k.match_tier, k.matched_on, k.link_state, k.is_new_construction,
+                       p.source_permit_id, p.address, p.permit_type, p.applied_date, p.issued_date,
+                       e.effective_class AS flood_class
+                FROM decision_permit_links k JOIN permits p ON p.id = k.permit_id
+                JOIN permit_flood_effective e ON e.permit_id = p.id
+                WHERE k.decision_key = ? ORDER BY k.link_state DESC, p.applied_date""", (decision_key,))]
+        conflicts = [dict(r) for r in conn.execute(
+            "SELECT field, variants_json FROM land_use_decision_conflicts WHERE decision_key = ?", (decision_key,))]
+        review = conn.execute("SELECT verified_outcome, evidence, reviewer, reviewed_at FROM decision_outcome_review "
+                              "WHERE decision_key = ?", (decision_key,)).fetchone()
+        cov = land_use_stats.coverage(conn)
+    return {"decision": {k: row[k] for k in DECISION_FIELDS}, "addresses": addresses, "links": links,
+            "conflicts": conflicts, "review": dict(review) if review else None, "coverage": cov}
+
+
+@app.get("/api/land-use/export.csv")
+def land_use_export_csv(
+    status: Optional[list[str]] = Query(default=None),
+    outcome: Optional[list[str]] = Query(default=None),
+    land_use_label: Optional[list[str]] = Query(default=None),
+    flood_class: Optional[list[str]] = Query(default=None),
+    decided_from: Optional[str] = None,
+    decided_to: Optional[str] = None,
+    match_tier: Optional[list[str]] = Query(default=None),
+):
+    """Decisions (default: all; the lead list is ?status=no_candidate_permit)
+    for Power BI. Every row and the response headers carry the permit
+    observation window, because "no candidate permit" only means none
+    appeared in the permits observed between those dates."""
+    with _ro() as conn:
+        rows = _decisions(conn, status, outcome, land_use_label, flood_class, decided_from, decided_to, match_tier)
+        cov = land_use_stats.coverage(conn) or {}
+    cov_from, cov_to = cov.get("backfill_from"), cov.get("last_refresh_at")
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(DECISION_FIELDS + ("permits_observed_from", "permits_observed_to"))
+    for r in rows:
+        writer.writerow([r[k] for k in DECISION_FIELDS] + [cov_from, cov_to])
+    return Response(buf.getvalue(), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="permitiq_land_use.csv"',
+        "X-Permits-Observed-From": str(cov_from), "X-Permits-Observed-To": str(cov_to)})
+
+
+@app.get("/api/land-use/stats")
+def land_use_stats_route():
+    cfg = _land_use_cfg()
+    with _ro() as conn:
+        return land_use_stats.compute_land_use_stats(conn, cfg)
 
 
 def _active_flood_load(conn) -> Optional[sqlite3.Row]:
