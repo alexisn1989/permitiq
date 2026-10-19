@@ -714,17 +714,38 @@ def land_use_decision_detail(decision_key: str):
         links = [dict(r) for r in conn.execute(
             f"""SELECT k.permit_id, k.match_tier, k.matched_on, k.link_state, k.is_new_construction,
                        p.source_permit_id, p.address, p.permit_type, p.applied_date, p.issued_date,
-                       e.effective_class AS flood_class
+                       e.effective_class AS flood_class, pp.display_gpin AS parcel_gpin,
+                       {flood_stats.PARCEL_CLASS_SQL} AS parcel_flood_class,
+                       lr.verdict AS review_verdict, lr.reviewer AS review_reviewer, lr.reviewed_at AS review_at
                 FROM decision_permit_links_effective k JOIN permits p ON p.id = k.permit_id
-                JOIN permit_flood_effective e ON e.permit_id = p.id
+                JOIN permit_flood_effective e ON e.permit_id = p.id {flood_stats.PARCEL_JOIN_SQL}
+                LEFT JOIN decision_link_review lr ON lr.decision_key = k.decision_key AND lr.permit_id = k.permit_id
                 WHERE k.decision_key = ? ORDER BY k.link_state DESC, p.applied_date""", (decision_key,))]
+        parcel_rows = [dict(r) for r in conn.execute(
+            """SELECT e.seq, a.raw_text, e.parcel_state, e.display_gpin, e.alt_gpin, e.dispute_reason,
+                      e.review_verdict, e.set_verdict, e.link_gpin, e.gpin_trusted, pa.zoning, pa.land_use,
+                      pa.prop_class, ROUND(pa.tax_area_sqft / 43560.0, 4) AS acreage, pa.prop_address,
+                      pf.parcel_flood_class, pf.share_sfha_v, pf.share_sfha_a, pf.share_shaded_x,
+                      pf.share_other_mapped, pf.share_unmapped
+               FROM decision_parcel_effective e
+               JOIN land_use_decision_addresses a ON a.decision_key = e.decision_key AND a.seq = e.seq
+               LEFT JOIN parcels pa ON pa.load_id = e.load_id AND pa.gpin = e.display_gpin
+               LEFT JOIN parcel_flood_effective pf ON pf.gpin = e.display_gpin
+               WHERE e.decision_key = ? ORDER BY e.seq""", (decision_key,))]
         conflicts = [dict(r) for r in conn.execute(
             "SELECT field, variants_json FROM land_use_decision_conflicts WHERE decision_key = ?", (decision_key,))]
-        review = conn.execute("SELECT verified_outcome, evidence, reviewer, reviewed_at FROM decision_outcome_review "
-                              "WHERE decision_key = ?", (decision_key,)).fetchone()
+        review = conn.execute(
+            "SELECT r.verified_outcome, r.evidence, r.reviewer, r.reviewed_at, r.conflict_resolution, "
+            "COALESCE(r.reviewed_fingerprint = d.facts_fingerprint, 0) AS valid FROM decision_outcome_review r "
+            "JOIN land_use_decisions d ON d.decision_key = r.decision_key WHERE r.decision_key = ?",
+            (decision_key,)).fetchone()
+        meeting_id = conn.execute("SELECT meeting_id FROM land_use_decisions WHERE decision_key = ?",
+                                  (decision_key,)).fetchone()[0]
         cov = land_use_stats.coverage(conn)
-    return {"decision": {k: row[k] for k in DECISION_FIELDS}, "addresses": addresses, "links": links,
-            "conflicts": conflicts, "review": dict(review) if review else None, "coverage": cov}
+        as_of = quality.data_as_of(conn)
+    return {"decision": {k: row[k] for k in DECISION_FIELDS}, "meeting_id": meeting_id, "addresses": addresses,
+            "parcel_rows": parcel_rows, "links": links, "conflicts": conflicts,
+            "review": dict(review) if review else None, "coverage": cov, "data_as_of": as_of}
 
 
 @app.get("/api/land-use/export.csv")

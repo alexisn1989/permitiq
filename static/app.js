@@ -701,6 +701,7 @@ function landUsePopup(d) {
       <p class="pop-sub">Votes: ${esc(d.yes_count)} yes · ${esc(d.no_count)} no · ${esc(d.absent_count)} absent
         ${d.verified_outcome ? " · verified: " + esc(d.verified_outcome) : " · outcome not verified"}</p>
       <div class="landuse-links" data-key="${esc(d.decision_key)}">Loading linked permits…</div>
+      <div class="pop-actions"><a class="btn small" href="/static/lead.html?key=${encodeURIComponent(d.decision_key)}">Open lead details</a></div>
     </div>`;
 }
 

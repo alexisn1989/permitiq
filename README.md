@@ -309,6 +309,47 @@ python scripts/parcel_report.py                    # reports/parcel_vb.md + .csv
 - **Cross-check.** The report compares our parcel class with the city's own `FEMA_ZONE_BLDG` field.
 - **No assessed values or lead score yet.** There is no assessor bulk source.
 
+### Real-data run, measured accuracy, lead screen
+
+One logged runbook runs the whole Virginia Beach chain on real data. The Council export comes from the VoteIQ host via `tools/export_vb_council_votes.py`.
+
+```powershell
+python scripts/run_vb_pipeline.py --phase profile --council-export vb_council_votes.jsonl
+#   -> fill config/flood_report.toml and config/land_use.toml from the profile logs
+python scripts/run_vb_pipeline.py --phase full --council-export vb_council_votes.jsonl `
+    --parcels-file vb_parcels.geojson --parcels-count N --reviews-dir reviews\
+#   -> check reports\run_*\accuracy_sample.csv (an independent search for each lead row)
+python scripts/accuracy_tally.py reports\run_<ts>\accuracy_sample.csv --apply-links
+python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re-link + reports after reviews
+```
+
+- **Order.** Council decisions are ingested and geocoded before parcel matching, flood tagging and linking. Imported reviews trigger a re-link before any report.
+- **Run manifest.** `reports/run_<ts>/run_manifest.json` records each step's command, exit code, times and output tail, the order executed, and the source dates.
+- **Skipped steps.** A refused step (e.g. the cohort not configured yet) is recorded as skipped, with its reason.
+- **Unmatched reasons.** `unmatched_reasons.csv` lists every entity per aspect that did not fully match, with its reason code; `unmatched_reasons_counts.csv` totals them.
+- **Cross-row conflicts.** If a decision's street-address parcel is not among its printed-GPIN parcels, that is a cross-row conflict. Those rows feed no parcel or GPIN link until `review_parcels.py` records a decision-set verdict (`rows_consistent`, `gpin_rows_correct`, `street_rows_correct`, `unresolvable`). A multi-parcel application, with more GPINs than addresses, is not a conflict.
+- **Stale reviews come first.** A review whose facts changed reads `outcome_review_stale` even when the item also has source conflicts; `has_conflicts` shows both.
+- **Frozen accuracy samples** (`accuracy_sample.py`) record:
+  - the source-load IDs and Council export SHA;
+  - a content fingerprint of permits, decisions, links and reviews;
+  - each stratum's population N, the seed and the selection rule;
+  - per-row fact fingerprints and a sheet hash.
+- **Judgments are explicit.** Links use `same_project`. Leads use `lead_check` plus a required `search_done`, an independent search outside `permits.db`. Flood disagreements use `flood_check`.
+- **The tally** (`accuracy_tally.py`):
+  - refuses an edited sheet;
+  - drops rows whose facts changed;
+  - reports per-tier adjudicated-sample precision with Wilson 95% intervals, beside N, `cant_tell` and the stale count;
+  - gives a pooled figure only as a labeled population-weighted estimate, when every tier was adjudicated;
+  - with `--apply-links`, turns only fresh `same_project` yes/no link rows into link reviews.
+- **`/api/quality` and `quality_report.py`** show live coverage, unresolved cases and refresh age. Accuracy is withheld (`"freshness": "stale"`) whenever the data it was computed on has changed. A re-run that changes nothing keeps the tally fresh.
+- **Lead screen.** `/static/lead.html?key=<decision_key>` (also "Open lead details" in the map popup) shows on one screen:
+  - the Council decision with its review evidence;
+  - the parcel(s) with dispute state and an outline;
+  - later permits with match reason and review state;
+  - flood screening;
+  - data as of.
+- **Marking links.** "Mark bad link" / "Confirm" queue verdicts in the browser, and "Download review file" saves a CSV for `review_land_use.py --links`. The API stays read-only.
+
 ---
 
 ## API
@@ -333,6 +374,8 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/land-use/export.csv` | Same filters; the lead list is `?status=no_candidate_permit`; every row carries the permit observation window |
 | `GET /api/land-use/stats` | Counts by status, label and year; time-to-permit blocks |
 | `GET /api/parcels/{gpin}.geojson` | One parcel outline from the active parcel load (ETag / 304; 404 if absent) |
+| `GET /api/quality` | Coverage, unresolved cases, refresh age; accuracy only while its data snapshot is current |
+| `GET /api/data-as-of` | Recorded source dates and the permit observation window |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 
@@ -344,7 +387,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**358 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**386 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 
