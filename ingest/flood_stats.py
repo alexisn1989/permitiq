@@ -33,6 +33,27 @@ MATCHED = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha")
 COVERAGE = ("no_polygon", "not_geocoded", "untagged")
 ALL_CLASSES = MATCHED + COVERAGE + ("out_of_scope",)
 DEFAULT_MIN_N = 20
+
+# Stage 3 parcel basis (basis="parcel"): the class is the parcel's area-share
+# class. Screening classes, unmatched / ambiguous / disputed parcels and
+# untagged rows are coverage classes -- shown beside every row, never in a
+# denominator. MATCHED (the denominator) is the same four classes.
+PARCEL_COVERAGE = ("screening_sliver", "screening_partial_coverage", "no_polygon", "no_parcel", "ambiguous",
+                   "parcel_disputed", "not_geocoded", "untagged")
+BASES = {
+    "point": {"coverage": COVERAGE, "all": ALL_CLASSES},
+    "parcel": {"coverage": PARCEL_COVERAGE, "all": MATCHED + PARCEL_COVERAGE + ("out_of_scope",)},
+}
+PARCEL_CLASS_SQL = """CASE
+    WHEN pp.parcel_state = 'out_of_scope' THEN 'out_of_scope'
+    WHEN pp.parcel_state = 'untagged' THEN 'untagged'
+    WHEN pp.parcel_state IN ('no_parcel', 'ambiguous') THEN pp.parcel_state
+    WHEN pp.parcel_state = 'not_geocoded_no_gpin' THEN 'not_geocoded'
+    WHEN pp.disputed = 1 AND (pp.review_verdict IS NULL OR pp.review_verdict = 'unresolvable') THEN 'parcel_disputed'
+    WHEN pf.gpin IS NULL THEN 'untagged'
+    ELSE pf.parcel_flood_class END"""
+PARCEL_JOIN_SQL = ("JOIN permit_parcel_effective pp ON pp.permit_id = p.id "
+                   "LEFT JOIN parcel_flood_effective pf ON pf.gpin = pp.display_gpin")
 _ZIP_RE = re.compile(r"^(\d{5}|unknown)$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RAW_KEYS = {"permit_type": "$.PermitType", "work_type": "$.WorkType", "construction_type": "$.ConstructionType"}
@@ -96,8 +117,9 @@ def _cohort_sql(include: list[dict]) -> tuple[str, list]:
     return "(" + " OR ".join(ors) + ")", params
 
 
-def _block_row(key, counts: dict, min_n: int) -> dict:
-    total = sum(counts.get(c, 0) for c in ALL_CLASSES)
+def _block_row(key, counts: dict, min_n: int, basis: str = "point") -> dict:
+    coverage, all_classes = BASES[basis]["coverage"], BASES[basis]["all"]
+    total = sum(counts.get(c, 0) for c in all_classes)
     matched = sum(counts.get(c, 0) for c in MATCHED)
     shares = None
     if matched >= min_n and matched > 0:
@@ -107,14 +129,14 @@ def _block_row(key, counts: dict, min_n: int) -> dict:
         "key": key,
         "total": total,
         "matched": matched,
-        "counts": {c: counts.get(c, 0) for c in ALL_CLASSES},
+        "counts": {c: counts.get(c, 0) for c in all_classes},
         "shares_of_matched": shares,
         "suppressed": shares is None,
-        "coverage_pct_of_total": {c: (round(100 * counts.get(c, 0) / total, 1) if total else None) for c in COVERAGE},
+        "coverage_pct_of_total": {c: (round(100 * counts.get(c, 0) / total, 1) if total else None) for c in coverage},
     }
 
 
-def _block(rows: list[dict], min_n: int) -> dict:
+def _block(rows: list[dict], min_n: int, basis: str = "point") -> dict:
     def agg(keyfn):
         acc: dict = {}
         for r in rows:
@@ -127,9 +149,9 @@ def _block(rows: list[dict], min_n: int) -> dict:
     by_year = agg(lambda r: r["yr"])
     by_zip = agg(lambda r: r["zip"])
     return {
-        "overall": _block_row("all", overall, min_n),
-        "by_year": [_block_row(k, v, min_n) for k, v in sorted(by_year.items())],
-        "by_zip": [_block_row(k, v, min_n) for k, v in sorted(by_zip.items())],
+        "overall": _block_row("all", overall, min_n, basis),
+        "by_year": [_block_row(k, v, min_n, basis) for k, v in sorted(by_year.items())],
+        "by_zip": [_block_row(k, v, min_n, basis) for k, v in sorted(by_zip.items())],
     }
 
 
@@ -142,8 +164,12 @@ def active_load(conn) -> dict | None:
 
 
 def compute_flood_stats(conn, cohort_cfg: dict, issued_from: str | None = None,
-                        issued_to: str | None = None, zip_code: str | None = None) -> dict:
+                        issued_to: str | None = None, zip_code: str | None = None, basis: str = "point") -> dict:
     validate_context(issued_from, issued_to, zip_code)
+    if basis not in BASES:
+        raise ValueError(f"basis must be one of {tuple(BASES)} (got {basis!r})")
+    cls_sql = "e.effective_class" if basis == "point" else PARCEL_CLASS_SQL
+    join_sql = "" if basis == "point" else PARCEL_JOIN_SQL
     cohort_expr, cohort_params = _cohort_sql(cohort_cfg["include"])
     where, params = ["p.locality = ?"], [LOCALITY]
     if issued_from:
@@ -156,12 +182,12 @@ def compute_flood_stats(conn, cohort_cfg: dict, issued_from: str | None = None,
         where.append(f"{ZIP_SQL} = ?")
         params.append(zip_code)
     sql = f"""
-        SELECT substr(p.issued_date, 1, 4) AS yr, {ZIP_SQL} AS zip, e.effective_class AS cls,
+        SELECT substr(p.issued_date, 1, 4) AS yr, {ZIP_SQL} AS zip, {cls_sql} AS cls,
                {cohort_expr} AS in_cohort,
                (p.issued_date IS NOT NULL) AS issued,
                (p.status_bucket = 'expired_void') AS void,
                COUNT(*) AS n
-        FROM permits p JOIN permit_flood_effective e ON e.permit_id = p.id
+        FROM permits p JOIN permit_flood_effective e ON e.permit_id = p.id {join_sql}
         WHERE {' AND '.join(where)}
         GROUP BY yr, zip, cls, in_cohort, issued, void
     """
@@ -180,16 +206,17 @@ def compute_flood_stats(conn, cohort_cfg: dict, issued_from: str | None = None,
     base_rows, base_excl = population(False)
     result = {
         "definitions_version": 1,
+        "basis": basis,
         "locality": LOCALITY,
         "context_filters": {"issued_from": issued_from, "issued_to": issued_to, "zip": zip_code},
         "min_n": min_n,
         "load": active_load(conn),
         "cohort_configured": bool(cohort_cfg["include"]),
         "cohort_definition": {"name": cohort_cfg["name"], "include": cohort_cfg["include"]} if cohort_cfg["include"] else None,
-        "baseline": {**_block(base_rows, min_n), "excluded": base_excl},
+        "baseline": {**_block(base_rows, min_n, basis), "excluded": base_excl},
         "cohort": None,
     }
     if cohort_cfg["include"]:
         c_rows, c_excl = population(True)
-        result["cohort"] = {**_block(c_rows, min_n), "excluded": c_excl}
+        result["cohort"] = {**_block(c_rows, min_n, basis), "excluded": c_excl}
     return result

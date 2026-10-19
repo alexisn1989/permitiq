@@ -3,6 +3,13 @@
 Deterministic tiers, highest first; one link per (decision, permit):
   gpin           permit raw_json.GPIN's first 10 digits = a GPIN printed in the title
   address_exact  same house number and normalized street
+  same_parcel    both matched to the same parcel (Stage 3) -- only through
+                 link_gpin, which excludes ambiguous and unresolved disputed matches
+A Stage 3 parcel dispute (GPIN contradicts the location) also gates the gpin
+tier on that side (gpin_trusted): unresolved, 'unresolvable' and
+'point_correct' block it; 'gpin_correct' restores it. Rows with no fresh
+parcel match keep Stage 2 behaviour -- there is no parcel evidence to apply.
+Address tiers compare street strings, independent of the GPIN, and stay.
   address_range  same normalized street, house number inside a printed range
 Every automatic link is a CANDIDATE: a property match can connect an approval
 to an unrelated permit at the same parcel. Only decision_link_review
@@ -24,7 +31,7 @@ from ingest.address_norm import gpin10, parse_permit_street
 from ingest.flood_stats import _cohort_sql
 
 LOCALITY = "virginia_beach"
-TIER_RANK = {"gpin": 1, "address_exact": 2, "address_range": 3, "manual": 4}
+TIER_RANK = {"gpin": 1, "address_exact": 2, "same_parcel": 3, "address_range": 4, "manual": 5}
 
 
 class CoverageError(Exception):
@@ -101,29 +108,36 @@ def new_construction_ids(conn, include: list[dict]) -> set[int] | None:
 
 
 def _permit_index(conn):
-    by_gpin, by_street = defaultdict(list), defaultdict(list)
+    by_gpin, by_street, by_parcel = defaultdict(list), defaultdict(list), defaultdict(list)
     for r in conn.execute(
-            "SELECT id, applied_date, json_extract(raw_json, '$.StreetAddress') AS street, "
-            "json_extract(raw_json, '$.GPIN') AS gpin FROM permits WHERE locality = ? AND applied_date IS NOT NULL",
-            (LOCALITY,)):
+            "SELECT p.id, p.applied_date, json_extract(p.raw_json, '$.StreetAddress') AS street, "
+            "json_extract(p.raw_json, '$.GPIN') AS gpin, e.link_gpin, COALESCE(e.gpin_trusted, 1) AS gpin_trusted "
+            "FROM permits p "
+            "LEFT JOIN permit_parcel_effective e ON e.permit_id = p.id "
+            "WHERE p.locality = ? AND p.applied_date IS NOT NULL", (LOCALITY,)):
         g = gpin10(r["gpin"])
-        if g:
+        if g and r["gpin_trusted"]:  # a disputed GPIN (unresolved / unresolvable / point_correct) never links
             by_gpin[g].append(r)
         parsed = parse_permit_street(r["street"])
         if parsed:
             by_street[parsed[1]].append((parsed[0], r))
-    return by_gpin, by_street
+        if r["link_gpin"]:  # fresh, unambiguous, and undisputed (or dispute resolved by review)
+            by_parcel[r["link_gpin"]].append(r)
+    return by_gpin, by_street, by_parcel
 
 
 def build_links(conn, cfg: dict) -> tuple[list[dict], list[dict]]:
     """Automatic candidate links + 'nearby, not linked' review candidates.
     A permit qualifies only if applied on/after the meeting date and within
     link_window_months of it."""
-    by_gpin, by_street = _permit_index(conn)
+    by_gpin, by_street, by_parcel = _permit_index(conn)
     addrs = defaultdict(list)
     for a in conn.execute(
-            "SELECT a.*, d.meeting_date FROM land_use_decision_addresses a "
-            "JOIN land_use_decisions d ON d.decision_key = a.decision_key WHERE d.meeting_date IS NOT NULL"):
+            "SELECT a.*, d.meeting_date, e.link_gpin, COALESCE(e.gpin_trusted, 1) AS gpin_trusted "
+            "FROM land_use_decision_addresses a "
+            "JOIN land_use_decisions d ON d.decision_key = a.decision_key "
+            "LEFT JOIN decision_parcel_effective e ON e.decision_key = a.decision_key AND e.seq = a.seq "
+            "WHERE d.meeting_date IS NOT NULL"):
         addrs[a["decision_key"]].append(a)
     best: dict[tuple[str, int], dict] = {}
     nearby: list[dict] = []
@@ -133,7 +147,7 @@ def build_links(conn, cfg: dict) -> tuple[list[dict], list[dict]]:
         in_window = lambda p: start <= p["applied_date"] <= end  # noqa: E731
         hits = []
         for a in rows:
-            if a["gpin10"]:
+            if a["gpin10"] and a["gpin_trusted"]:
                 hits += [(p, "gpin", f"gpin10={a['gpin10']}") for p in by_gpin.get(a["gpin10"], []) if in_window(p)]
             if a["street_norm"]:
                 for house, p in by_street.get(a["street_norm"], []):
@@ -146,6 +160,11 @@ def build_links(conn, cfg: dict) -> tuple[list[dict], list[dict]]:
                     elif abs(house - a["house_from"]) <= 10 or abs(house - a["house_to"]) <= 10:
                         nearby.append({"decision_key": key, "permit_id": p["id"], "matched_on":
                                        f"{house} near {a['house_from']}-{a['house_to']} {a['street_norm']}"})
+            # Stage 3: same parcel, by undisputed (or review-resolved) parcel matches
+            # on BOTH sides. Still a candidate, still inside the window.
+            if a["link_gpin"]:
+                hits += [(p, "same_parcel", f"parcel {a['link_gpin']}") for p in by_parcel.get(a["link_gpin"], [])
+                         if in_window(p)]
         for p, tier, on in hits:
             k = (key, p["id"])
             if k not in best or TIER_RANK[tier] < TIER_RANK[best[k]["match_tier"]]:
@@ -154,6 +173,20 @@ def build_links(conn, cfg: dict) -> tuple[list[dict], list[dict]]:
     nearby = [n for n in {(n["decision_key"], n["permit_id"]): n for n in nearby}.values()
               if (n["decision_key"], n["permit_id"]) not in linked]
     return list(best.values()), nearby
+
+
+def gpin_gate_counts(conn) -> dict:
+    """For the linker output: how many GPIN-bearing rows are blocked by a
+    dispute, and how many had no fresh parcel match (Stage 2 behaviour)."""
+    q = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+    return {
+        "permits_gpin_blocked": q("SELECT COUNT(*) FROM permit_parcel_effective WHERE gpin_trusted = 0"),
+        "permits_without_fresh_parcel_match": q(
+            "SELECT COUNT(*) FROM permits p JOIN permit_parcel_effective e ON e.permit_id = p.id "
+            "WHERE p.locality = 'virginia_beach' AND e.fresh = 0"),
+        "decision_rows_gpin_blocked": q("SELECT COUNT(*) FROM decision_parcel_effective WHERE gpin_trusted = 0"),
+        "decision_rows_without_fresh_parcel_match": q("SELECT COUNT(*) FROM decision_parcel_effective WHERE fresh = 0"),
+    }
 
 
 def rebuild_links(conn, cfg: dict, ts: str) -> dict:

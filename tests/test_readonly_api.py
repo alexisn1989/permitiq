@@ -28,7 +28,8 @@ client = TestClient(app_module.app)
 
 READ_ROUTES = ["/health", "/api/permits", "/api/stats", "/api/facets", "/api/data-status",
                "/api/export.geojson", "/api/export.csv", "/api/flood-stats", "/api/flood-zones/index.json",
-               "/api/land-use/decisions", "/api/land-use/export.csv", "/api/land-use/stats"]
+               "/api/land-use/decisions", "/api/land-use/export.csv", "/api/land-use/stats",
+               "/api/parcels/14892864850000.geojson", "/api/flood-stats?basis=parcel"]
 
 
 def test_importing_app_creates_no_database_file(tmp_path):

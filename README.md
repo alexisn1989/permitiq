@@ -274,6 +274,41 @@ python scripts/land_use_report.py                                 # reports/land
 - **One window rule.** A link counts only if the permit was applied for on or after the approval and within `link_window_months`, using SQLite `date()` arithmetic everywhere. The review import refuses confirmed links outside the window, and the linker drops them. Every read goes through the `decision_permit_links_effective` view: status, link counts, timing, the flood fallback, the API, and the ingest's geocode skip.
 - Status is defined once, in the `land_use_decision_status` view.
 
+### Parcel enrichment (Virginia Beach, Stage 3)
+
+Matches permits and Council decisions to city parcels (`Property_Information/MapServer/12`). It adds zoning, land use, property class and acreage, and classifies flood exposure by the **parcel polygon** next to the Stage 1 address point. Parcel flood classes are a **screening estimate**: the city's parcel terms say the data is "not valid for … flood-zone determination".
+
+```powershell
+python scripts/migrate_db.py                       # schema v5
+python scripts/load_parcels.py --inspect           # fields, maxRecordCount, lastEditDate, returnCountOnly
+python scripts/load_parcels.py --dry-run
+python scripts/load_parcels.py                     # or: --file vb_parcels.geojson --expected-count N
+python scripts/match_parcels.py --dry-run
+python scripts/match_parcels.py
+python scripts/review_parcels.py reports/parcel_review.csv   # after filling it in (disputed matches)
+python scripts/tag_parcel_flood.py
+python scripts/link_decisions_permits.py           # adds the same_parcel tier
+python scripts/parcel_report.py                    # reports/parcel_vb.md + .csv
+```
+
+- **Complete loads only.** The loader reads the layer's count and the full list of object IDs, then fetches in batches of at most 2,000 by object ID. A load is activated only if the received IDs equal that list exactly (none missing, none duplicated, none extra) and the count hasn't changed during the fetch. Otherwise nothing is written and the previous load keeps serving. `--file` requires `--expected-count`.
+- **Matching rules.**
+  - Permits: an exact 14-digit GPIN; else a 10-digit GPIN that matches exactly one parcel; else the point inside exactly one parcel. Several candidates means `ambiguous`, never a guess.
+  - Decisions: the printed GPIN, else the exact parcel address, else the geocoded point.
+- **Disputes.** When a GPIN and a point land on different parcels, the match is **disputed**. It is shown with both parcels and excluded from `same_parcel` links and from the `gpin` link tier until `review_parcels.py` resolves it:
+  - `gpin_correct` re-enables both;
+  - `point_correct` switches the parcel to the point's;
+  - `unresolvable` keeps the match excluded.
+- **Review freshness.** A review records the facts it judged: GPIN, address, house-number range, point and parcel load. If any of those change, the review stops applying.
+- **Parcel flood class.** The class is the most hazardous of V, A or shaded X covering at least `min_share` of the parcel (`config/parcels.toml`, default 1%).
+  - `screening_sliver`: a hazard zone touches the parcel but none reaches the threshold.
+  - `screening_partial_coverage`: part of the parcel has no FEMA polygon.
+  - `matched_non_sfha`: only when the whole parcel is mapped outside the SFHA.
+  - All five area shares are always shown.
+  - `/api/flood-stats?basis=parcel` reports the parcel basis; screening, unmatched, ambiguous and disputed parcels are coverage classes and never enter a denominator.
+- **Cross-check.** The report compares our parcel class with the city's own `FEMA_ZONE_BLDG` field.
+- **No assessed values or lead score yet.** There is no assessor bulk source.
+
 ---
 
 ## API
@@ -297,6 +332,7 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/land-use/decisions/{key}` | One decision: addresses, linked permits with tier and state, conflicts, review |
 | `GET /api/land-use/export.csv` | Same filters; the lead list is `?status=no_candidate_permit`; every row carries the permit observation window |
 | `GET /api/land-use/stats` | Counts by status, label and year; time-to-permit blocks |
+| `GET /api/parcels/{gpin}.geojson` | One parcel outline from the active parcel load (ETag / 304; 404 if absent) |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 
@@ -308,7 +344,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**313 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**358 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

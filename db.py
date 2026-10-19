@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -35,7 +35,17 @@ LAND_USE_STATUSES = (
 )
 VERIFIED_OUTCOMES = ("approved", "approved_with_conditions", "denied", "deferred", "withdrawn", "other")
 OUTCOME_EVIDENCE = ("unverified", "proposed_approved", "proposed_not_approved", "unknown")
-MATCH_TIERS = ("gpin", "address_exact", "address_range", "manual")
+MATCH_TIERS = ("gpin", "address_exact", "same_parcel", "address_range", "manual")
+
+# Stage 3 parcel enrichment (schema v5). Parcel flood classes are separate from
+# FLOOD_CLASSES (point basis): the two screening classes mark sub-threshold
+# hazard slivers and partly unmapped parcels, never "outside".
+PARCEL_FLOOD_CLASSES = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha",
+                        "screening_sliver", "screening_partial_coverage", "no_polygon")
+PERMIT_PARCEL_METHODS = ("gpin14", "gpin10_unique", "point_in_parcel", "ambiguous", "no_parcel",
+                         "not_geocoded_no_gpin")
+DECISION_PARCEL_METHODS = ("gpin10_unique", "address_exact", "point_in_parcel", "ambiguous", "no_parcel")
+PARCEL_REVIEW_VERDICTS = ("gpin_correct", "point_correct", "unresolvable")
 
 
 class DatabaseNotReady(Exception):
@@ -556,6 +566,237 @@ _SCHEMA_V4_STATEMENTS = [
 ]
 
 
+# Schema v5 (Stage 3 parcel enrichment). Additive, except one copy-and-rename
+# of the derived decision_permit_links table to widen its tier CHECK (adds
+# 'same_parcel'): every row is copied, because an emptied links table would
+# turn decisions into false no_candidate_permit leads.
+_SCHEMA_V5_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS parcel_loads (
+        load_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_url        TEXT NOT NULL,
+        source_vintage    TEXT,
+        content_hash      TEXT NOT NULL,
+        feature_count     INTEGER NOT NULL,
+        expected_count    INTEGER NOT NULL,
+        received_count    INTEGER NOT NULL,
+        unique_source_ids INTEGER NOT NULL,
+        loaded_at         TEXT NOT NULL,
+        is_active         INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+        CHECK (is_active = 0 OR (expected_count = received_count AND received_count = unique_source_ids))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_parcel_loads_active ON parcel_loads(is_active) WHERE is_active = 1",
+    """
+    CREATE TABLE IF NOT EXISTS parcels (
+        load_id        INTEGER NOT NULL REFERENCES parcel_loads(load_id),
+        gpin           TEXT NOT NULL,
+        gpin_digits    TEXT NOT NULL,
+        gpin10         TEXT,
+        zoning         TEXT,
+        land_use       TEXT,
+        prop_class     TEXT,
+        tax_area_sqft  REAL,
+        prop_address   TEXT,
+        house          INTEGER,
+        street_norm    TEXT,
+        fema_zone_bldg TEXT,
+        source_rows    INTEGER NOT NULL,
+        geom_geojson   TEXT NOT NULL,
+        minx REAL NOT NULL, miny REAL NOT NULL, maxx REAL NOT NULL, maxy REAL NOT NULL,
+        PRIMARY KEY (load_id, gpin)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_parcels_gpin10 ON parcels(load_id, gpin10)",
+    "CREATE INDEX IF NOT EXISTS idx_parcels_digits ON parcels(load_id, gpin_digits)",
+    "CREATE INDEX IF NOT EXISTS idx_parcels_street ON parcels(load_id, street_norm, house)",
+    # One row per VB permit, written by scripts/match_parcels.py. match_fp is a
+    # hash of the facts the match was made on (load, raw GPIN, coordinates,
+    # result); a dispute review applies only while it equals reviewed_fp.
+    """
+    CREATE TABLE IF NOT EXISTS permit_parcel (
+        permit_id        INTEGER PRIMARY KEY REFERENCES permits(id),
+        load_id          INTEGER NOT NULL REFERENCES parcel_loads(load_id),
+        method           TEXT NOT NULL CHECK (method IN
+            ('gpin14','gpin10_unique','point_in_parcel','ambiguous','no_parcel','not_geocoded_no_gpin')),
+        gpin             TEXT,
+        alt_gpin         TEXT,
+        disputed         INTEGER NOT NULL DEFAULT 0 CHECK (disputed IN (0, 1)),
+        gpin_point_agree INTEGER,
+        tagged_lat       REAL,
+        tagged_lng       REAL,
+        tagged_gpin_raw  TEXT,
+        match_fp         TEXT NOT NULL,
+        matched_at       TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_parcel (
+        decision_key  TEXT NOT NULL,
+        seq           INTEGER NOT NULL,
+        load_id       INTEGER NOT NULL REFERENCES parcel_loads(load_id),
+        method        TEXT NOT NULL CHECK (method IN
+            ('gpin10_unique','address_exact','point_in_parcel','ambiguous','no_parcel')),
+        gpin          TEXT,
+        alt_gpin      TEXT,
+        disputed      INTEGER NOT NULL DEFAULT 0 CHECK (disputed IN (0, 1)),
+        tagged_gpin10 TEXT,
+        tagged_house  INTEGER,
+        tagged_house_to INTEGER,
+        tagged_street TEXT,
+        tagged_lat    REAL,
+        tagged_lng    REAL,
+        match_fp      TEXT NOT NULL,
+        matched_at    TEXT NOT NULL,
+        PRIMARY KEY (decision_key, seq)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS parcel_match_review (
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('permit','decision')),
+        subject_key  TEXT NOT NULL,
+        verdict      TEXT NOT NULL CHECK (verdict IN ('gpin_correct','point_correct','unresolvable')),
+        reviewed_fp  TEXT NOT NULL,
+        reviewer     TEXT NOT NULL,
+        note         TEXT,
+        reviewed_at  TEXT NOT NULL,
+        PRIMARY KEY (subject_kind, subject_key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS parcel_flood (
+        parcel_load_id       INTEGER NOT NULL REFERENCES parcel_loads(load_id),
+        flood_load_id        INTEGER NOT NULL REFERENCES flood_zone_loads(load_id),
+        gpin                 TEXT NOT NULL,
+        share_sfha_v         REAL NOT NULL,
+        share_sfha_a         REAL NOT NULL,
+        share_shaded_x       REAL NOT NULL,
+        share_other_mapped   REAL NOT NULL,
+        share_unmapped       REAL NOT NULL,
+        min_share            REAL NOT NULL,
+        parcel_flood_class   TEXT NOT NULL CHECK (parcel_flood_class IN ('sfha_v','sfha_a','shaded_x',
+            'matched_non_sfha','screening_sliver','screening_partial_coverage','no_polygon')),
+        computed_at          TEXT NOT NULL,
+        PRIMARY KEY (parcel_load_id, flood_load_id, gpin)
+    )
+    """,
+    # Fresh only when the match was made against the ACTIVE parcel load and
+    # the permit's coordinates and raw GPIN are the ones matched. link_gpin is
+    # the parcel the same_parcel tier may use: NULL for ambiguous/no_parcel,
+    # and NULL for a disputed match unless a current review resolved it.
+    """
+    CREATE VIEW IF NOT EXISTS permit_parcel_effective AS
+    SELECT s.permit_id, s.fresh,
+      CASE WHEN NOT s.in_scope THEN 'out_of_scope' WHEN s.fresh = 1 THEN s.method ELSE 'untagged' END AS parcel_state,
+      CASE WHEN s.fresh = 1 THEN s.load_id END AS load_id,
+      CASE WHEN s.fresh = 1 THEN s.method END AS method,
+      CASE WHEN s.fresh = 1 THEN s.disputed END AS disputed,
+      CASE WHEN s.fresh = 1 THEN s.verdict END AS review_verdict,
+      CASE WHEN s.fresh = 1 THEN
+        CASE WHEN s.verdict = 'point_correct' THEN s.alt_gpin ELSE s.gpin END END AS display_gpin,
+      CASE WHEN s.fresh = 1 THEN s.alt_gpin END AS alt_gpin,
+      CASE WHEN s.fresh = 1 AND s.gpin IS NOT NULL AND s.method NOT IN ('ambiguous','no_parcel') THEN
+        CASE WHEN s.disputed = 0 THEN s.gpin
+             WHEN s.verdict = 'gpin_correct' THEN s.gpin
+             WHEN s.verdict = 'point_correct' THEN s.alt_gpin END END AS link_gpin,
+      CASE WHEN s.fresh = 1 AND s.disputed = 1
+                AND (s.verdict IS NULL OR s.verdict IN ('unresolvable', 'point_correct')) THEN 0 ELSE 1 END
+        AS gpin_trusted
+    FROM (
+      SELECT p.id AS permit_id, (p.locality = 'virginia_beach') AS in_scope,
+             COALESCE(l.load_id IS NOT NULL AND x.permit_id IS NOT NULL AND x.load_id = l.load_id
+                      AND x.tagged_lat IS p.lat AND x.tagged_lng IS p.lng
+                      AND x.tagged_gpin_raw IS json_extract(p.raw_json, '$.GPIN'), 0) AS fresh,
+             x.load_id, x.method, x.gpin, x.alt_gpin, x.disputed, r.verdict
+      FROM permits p
+      LEFT JOIN parcel_loads l ON l.is_active = 1
+      LEFT JOIN permit_parcel x ON x.permit_id = p.id
+      LEFT JOIN parcel_match_review r ON r.subject_kind = 'permit' AND r.subject_key = CAST(p.id AS TEXT)
+                                     AND r.reviewed_fp = x.match_fp
+    ) s
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS decision_parcel_effective AS
+    SELECT s.decision_key, s.seq, s.fresh,
+      CASE WHEN s.fresh = 1 THEN s.method ELSE 'untagged' END AS parcel_state,
+      CASE WHEN s.fresh = 1 THEN s.load_id END AS load_id,
+      CASE WHEN s.fresh = 1 THEN s.method END AS method,
+      CASE WHEN s.fresh = 1 THEN s.disputed END AS disputed,
+      CASE WHEN s.fresh = 1 THEN s.verdict END AS review_verdict,
+      CASE WHEN s.fresh = 1 THEN
+        CASE WHEN s.verdict = 'point_correct' THEN s.alt_gpin ELSE s.gpin END END AS display_gpin,
+      CASE WHEN s.fresh = 1 THEN s.alt_gpin END AS alt_gpin,
+      CASE WHEN s.fresh = 1 AND s.gpin IS NOT NULL AND s.method NOT IN ('ambiguous','no_parcel') THEN
+        CASE WHEN s.disputed = 0 THEN s.gpin
+             WHEN s.verdict = 'gpin_correct' THEN s.gpin
+             WHEN s.verdict = 'point_correct' THEN s.alt_gpin END END AS link_gpin,
+      CASE WHEN s.fresh = 1 AND s.disputed = 1
+                AND (s.verdict IS NULL OR s.verdict IN ('unresolvable', 'point_correct')) THEN 0 ELSE 1 END
+        AS gpin_trusted
+    FROM (
+      SELECT a.decision_key, a.seq,
+             COALESCE(l.load_id IS NOT NULL AND x.decision_key IS NOT NULL AND x.load_id = l.load_id
+                      AND x.tagged_gpin10 IS a.gpin10 AND x.tagged_house IS a.house_from
+                      AND x.tagged_house_to IS a.house_to AND x.tagged_street IS a.street_norm
+                      AND x.tagged_lat IS a.lat AND x.tagged_lng IS a.lng, 0) AS fresh,
+             x.load_id, x.method, x.gpin, x.alt_gpin, x.disputed, r.verdict
+      FROM land_use_decision_addresses a
+      LEFT JOIN parcel_loads l ON l.is_active = 1
+      LEFT JOIN decision_parcel x ON x.decision_key = a.decision_key AND x.seq = a.seq
+      LEFT JOIN parcel_match_review r ON r.subject_kind = 'decision'
+                                     AND r.subject_key = a.decision_key || '#' || a.seq
+                                     AND r.reviewed_fp = x.match_fp
+    ) s
+    """,
+    # Parcel flood rows count only for the ACTIVE parcel load and the ACTIVE
+    # Virginia Beach flood load.
+    """
+    CREATE VIEW IF NOT EXISTS parcel_flood_effective AS
+    SELECT f.* FROM parcel_flood f
+    JOIN parcel_loads pl ON pl.load_id = f.parcel_load_id AND pl.is_active = 1
+    JOIN flood_locality_dfirm m ON m.locality = 'virginia_beach'
+    JOIN flood_zone_loads fl ON fl.load_id = f.flood_load_id AND fl.dfirm_id = m.dfirm_id AND fl.is_active = 1
+    """,
+]
+_LINKS_V5_TABLE = """
+    CREATE TABLE decision_permit_links_v5 (
+        decision_key        TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        permit_id           INTEGER NOT NULL REFERENCES permits(id),
+        match_tier          TEXT NOT NULL CHECK (match_tier IN
+            ('gpin','address_exact','same_parcel','address_range','manual')),
+        matched_on          TEXT,
+        link_state          TEXT NOT NULL CHECK (link_state IN ('candidate','confirmed')),
+        is_new_construction INTEGER,
+        link_run_at         TEXT NOT NULL,
+        PRIMARY KEY (decision_key, permit_id),
+        CHECK (match_tier != 'manual' OR link_state = 'confirmed')
+    )
+"""
+_LINK_COLUMNS = "decision_key, permit_id, match_tier, matched_on, link_state, is_new_construction, link_run_at"
+
+
+def _widen_link_tiers(conn) -> None:
+    """Copy-and-rename decision_permit_links with 'same_parcel' allowed. The
+    views over it are dropped first and recreated from the v4 definitions."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'decision_permit_links'").fetchone()[0]
+    if "same_parcel" in sql:
+        return
+    before = conn.execute("SELECT COUNT(*) FROM decision_permit_links").fetchone()[0]
+    conn.execute("DROP VIEW IF EXISTS land_use_decision_status")
+    conn.execute("DROP VIEW IF EXISTS decision_permit_links_effective")
+    conn.execute(_LINKS_V5_TABLE)
+    conn.execute(f"INSERT INTO decision_permit_links_v5 ({_LINK_COLUMNS}) "
+                 f"SELECT {_LINK_COLUMNS} FROM decision_permit_links")
+    after = conn.execute("SELECT COUNT(*) FROM decision_permit_links_v5").fetchone()[0]
+    if after != before:
+        raise RuntimeError(f"decision_permit_links copy lost rows ({before} -> {after}); aborting migration")
+    conn.execute("DROP TABLE decision_permit_links")
+    conn.execute("ALTER TABLE decision_permit_links_v5 RENAME TO decision_permit_links")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_permit_links_permit ON decision_permit_links(permit_id)")
+    for statement in _SCHEMA_V4_STATEMENTS[1:]:  # the two CREATE VIEW statements
+        conn.execute(statement)
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -587,6 +828,10 @@ def init_db(db_path: Path | str | None = None) -> None:
             for statement in _SCHEMA_V4_STATEMENTS:
                 conn.execute(statement)
             _backfill_fingerprints(conn)  # old reviews keep NULL -> stale until re-reviewed
+        if current_version < 5:
+            for statement in _SCHEMA_V5_STATEMENTS:
+                conn.execute(statement)
+            _widen_link_tiers(conn)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

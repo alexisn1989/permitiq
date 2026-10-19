@@ -358,6 +358,7 @@ function popupHtml(p) {
       <p class="pop-sub">${esc(WORK_CATEGORY_LABELS[category])} · ${esc(p.permit_type || "Unknown type")} · ${esc(localityLabel(p.locality))}</p>
       <span class="badge ${esc(p.status_bucket)}">${esc(p.status || "Unknown")}</span>
       ${floodBadge(p)}
+      ${parcelHtml(p)}
       <div class="pop-actions">
         <button class="btn small" data-detail="${p.id}">View full details</button>
       </div>
@@ -432,6 +433,10 @@ function showDrawer(p) {
     ["Contractor", p.contractor],
     ["FEMA flood class", FLOOD_CLASS_LABELS[p.flood_class] || p.flood_class],
     ["FEMA zone", p.fld_zone ? p.fld_zone + (p.zone_subty ? ` (${p.zone_subty})` : "") : null],
+    ["Parcel (GPIN)", p.parcel_gpin ? `${p.parcel_gpin} · ${p.parcel_method}${p.parcel_disputed ? " · disputed" : ""}` : null],
+    ["Zoning / land use", p.zoning || p.land_use ? `${p.zoning || "?"} / ${p.land_use || "?"}` : null],
+    ["Acreage", p.acreage != null ? String(p.acreage) : null],
+    ["Parcel flood (screening estimate)", p.parcel_flood_class ? `${PARCEL_FLOOD_LABELS[p.parcel_flood_class] || p.parcel_flood_class} — ${parcelShares(p)}` : null],
     ["Description", p.description],
   ];
   const rows = fields.map(([label, value]) => {
@@ -691,6 +696,7 @@ function landUsePopup(d) {
       <p class="pop-sub">${esc(d.land_use_label)} · Council ${esc(d.meeting_date || "date unknown")}</p>
       <span class="flood-badge">${esc(st.label)}</span>
       ${d.flood_class ? `<span class="flood-badge ${esc(d.flood_class)}">${esc(FLOOD_CLASS_LABELS[d.flood_class] || d.flood_class)}</span>` : ""}
+      ${parcelHtml(d)}
       <p class="pop-sub">${esc((d.title || "").slice(0, 220))}${d.title_truncated ? "…" : ""}</p>
       <p class="pop-sub">Votes: ${esc(d.yes_count)} yes · ${esc(d.no_count)} no · ${esc(d.absent_count)} absent
         ${d.verified_outcome ? " · verified: " + esc(d.verified_outcome) : " · outcome not verified"}</p>
@@ -761,6 +767,52 @@ $("landuse-leads-chip").addEventListener("click", () => {
   loadLandUse();
 });
 renderLandUseControls();
+
+// ---------- parcels (Stage 3) ----------
+// Parcel flood is a screening estimate from area shares (the city's parcel
+// data is "not valid for flood-zone determination"); shares are always shown.
+const PARCEL_FLOOD_LABELS = {
+  sfha_v: "SFHA – coastal V/VE", sfha_a: "SFHA – A/AE", shaded_x: "Shaded X (0.2%)",
+  matched_non_sfha: "Mapped, outside SFHA", screening_sliver: "Hazard sliver below threshold – check",
+  screening_partial_coverage: "Partly unmapped – check", no_polygon: "No FEMA polygon",
+};
+const parcelLayer = L.layerGroup().addTo(map);
+
+function pct(v) { return v == null ? "?" : `${(100 * v).toFixed(1)}%`; }
+function parcelShares(o) {
+  return `V ${pct(o.parcel_share_sfha_v)} · A ${pct(o.parcel_share_sfha_a)} · shaded X ${pct(o.parcel_share_shaded_x)}`
+    + ` · other ${pct(o.parcel_share_other_mapped)} · unmapped ${pct(o.parcel_share_unmapped)}`;
+}
+
+function parcelHtml(o) {
+  if (!o.parcel_gpin) return o.parcel_method ? `<p class="pop-sub">Parcel: ${esc(o.parcel_method)}</p>` : "";
+  return `
+    <div class="parcel-box">
+      <div>Parcel ${esc(o.parcel_gpin)} · ${esc(o.parcel_method)}${o.parcel_disputed ? ' · <b>disputed</b>' : ""}</div>
+      <div>${esc(o.zoning || "?")} · ${esc(o.land_use || "?")}${o.acreage != null ? " · " + esc(o.acreage) + " ac" : ""}</div>
+      ${o.parcel_flood_class ? `<div>Parcel flood (screening estimate): ${esc(PARCEL_FLOOD_LABELS[o.parcel_flood_class] || o.parcel_flood_class)}</div>
+      <div class="parcel-shares">${esc(parcelShares(o))}</div>` : ""}
+      <button class="btn small" data-parcel="${esc(o.parcel_gpin)}">Show parcel</button>
+    </div>`;
+}
+
+async function showParcel(gpin) {
+  try {
+    const res = await fetch(`/api/parcels/${encodeURIComponent(gpin)}.geojson`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    parcelLayer.clearLayers();
+    const layer = L.geoJSON(await res.json(), { interactive: false, style: { color: "#ffffff", weight: 2, fill: false, dashArray: "4 3" } });
+    parcelLayer.addLayer(layer);
+    map.fitBounds(layer.getBounds().pad(0.6));
+  } catch (err) {
+    toast(`Parcel unavailable: ${err.message}`, true);
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-parcel]");
+  if (btn) showParcel(btn.dataset.parcel);
+});
 
 // ---------- boot ----------
 boot();

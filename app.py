@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import sqlite3
@@ -91,6 +92,11 @@ SORT_ORDERS = ("asc", "desc")
 # deliberately excluded here, not filtered out after the fact, so there is no
 # path (typo, refactor, etc.) by which it could leak.
 FLOOD_FIELDS = ("flood_class", "fld_zone", "zone_subty", "sfha")
+# Stage 3 parcel enrichment (permit_parcel_effective + active parcel/flood
+# loads). parcel_flood_class and its shares are a screening estimate.
+PARCEL_FIELDS = ("parcel_gpin", "parcel_method", "parcel_disputed", "zoning", "land_use", "prop_class", "acreage",
+                 "parcel_flood_class", "parcel_share_sfha_v", "parcel_share_sfha_a", "parcel_share_shaded_x",
+                 "parcel_share_other_mapped", "parcel_share_unmapped")
 
 PERMIT_FIELDS = (
     "id", "locality", "source_permit_id", "source_name", "source_url",
@@ -99,18 +105,31 @@ PERMIT_FIELDS = (
     "permit_type", "status", "status_bucket", "applied_date", "issued_date",
     "finaled_date", "expiration_date", "valuation", "description",
     "contractor", "applicant", "first_seen_at", "ingested_at",
-) + FLOOD_FIELDS
+) + FLOOD_FIELDS + PARCEL_FIELDS
 
 EXPORT_FIELDS = (
     "id", "source_permit_id", "locality", "permit_type", "status", "status_bucket",
     "address", "applied_date", "issued_date", "finaled_date", "expiration_date",
     "valuation", "description", "contractor", "source_name", "source_url",
     "source_record_url", "lat", "lng",
-) + FLOOD_FIELDS
+) + FLOOD_FIELDS + PARCEL_FIELDS
 
 # Every read joins the freshness view; permits columns are always p.-qualified.
-FROM_SQL = "permits p JOIN permit_flood_effective e ON e.permit_id = p.id"
-_FLOOD_SQL = {"flood_class": "e.effective_class", "fld_zone": "e.fld_zone",
+FROM_SQL = ("permits p JOIN permit_flood_effective e ON e.permit_id = p.id "
+            "JOIN permit_parcel_effective pp ON pp.permit_id = p.id "
+            "LEFT JOIN parcels pa ON pa.load_id = pp.load_id AND pa.gpin = pp.display_gpin "
+            "LEFT JOIN parcel_flood_effective pf ON pf.gpin = pp.display_gpin")
+PARCEL_SQL = {
+    "parcel_gpin": "pp.display_gpin", "parcel_method": "pp.parcel_state",
+    "parcel_disputed": "CASE WHEN pp.disputed IS NULL THEN NULL WHEN pp.disputed = 1 AND "
+                       "(pp.review_verdict IS NULL OR pp.review_verdict = 'unresolvable') THEN 1 ELSE 0 END",
+    "zoning": "pa.zoning", "land_use": "pa.land_use", "prop_class": "pa.prop_class",
+    "acreage": "ROUND(pa.tax_area_sqft / 43560.0, 4)", "parcel_flood_class": "pf.parcel_flood_class",
+    "parcel_share_sfha_v": "pf.share_sfha_v", "parcel_share_sfha_a": "pf.share_sfha_a",
+    "parcel_share_shaded_x": "pf.share_shaded_x", "parcel_share_other_mapped": "pf.share_other_mapped",
+    "parcel_share_unmapped": "pf.share_unmapped",
+}
+_FLOOD_SQL = {**PARCEL_SQL, "flood_class": "e.effective_class", "fld_zone": "e.fld_zone",
               "zone_subty": "e.zone_subty", "sfha": "e.sfha"}
 
 
@@ -233,7 +252,7 @@ def health():
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
             version = conn.execute("PRAGMA user_version").fetchone()[0]
         required = {"permits", "ingestion_runs", "geocode_cache", "permit_flood", "permit_flood_effective",
-                    "land_use_decisions", "land_use_decision_status"}
+                    "land_use_decisions", "land_use_decision_status", "permit_parcel_effective"}
         if not required.issubset(tables):
             return JSONResponse({"status": "error", "database": "schema_invalid"}, status_code=503)
         return {"status": "ok", "database": "ok", "schema_version": version}
@@ -523,6 +542,7 @@ def flood_stats_route(
     issued_from: Optional[str] = None,
     issued_to: Optional[str] = None,
     zip: Optional[str] = None,  # noqa: A002 - query parameter name
+    basis: str = "point",
 ):
     """Flood exposure of issued Virginia Beach permits: baseline (all types)
     and the configured cohort, computed by ingest/flood_stats.py -- the same
@@ -538,7 +558,7 @@ def flood_stats_route(
         raise HTTPException(503, "flood report cohort config is invalid") from None
     with _ro() as conn:
         try:
-            return flood_stats.compute_flood_stats(conn, cohort_cfg, issued_from, issued_to, zip)
+            return flood_stats.compute_flood_stats(conn, cohort_cfg, issued_from, issued_to, zip, basis)
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
 
@@ -552,7 +572,7 @@ DECISION_FIELDS = (
     "yes_count", "no_count", "absent_count", "abstain_count", "outcome_evidence", "verified_outcome",
     "status", "n_candidate_links", "n_confirmed_links", "address_text", "lat", "lng",
     "flood_class", "fld_zone", "flood_source",
-)
+) + PARCEL_FIELDS
 DECISION_SQL = """
     SELECT d.decision_key, d.meeting_date, d.title, d.title_truncated, d.land_use_label, d.result_raw,
            d.yes_count, d.no_count, d.absent_count, d.abstain_count, d.outcome_evidence,
@@ -592,6 +612,29 @@ def _land_use_cfg() -> dict:
         raise HTTPException(503, "land-use config is missing or invalid") from None
 
 
+def _decision_parcels(conn, keys: list[str]) -> dict[str, dict]:
+    """Parcel fields per decision: the first address row (by seq) with a
+    fresh parcel match; all NULL when none."""
+    out = {k: {f: None for f in PARCEL_FIELDS} for k in keys}
+    if not keys:
+        return out
+    cols = ", ".join(f"{expr} AS {name}" for name, expr in PARCEL_SQL.items())
+    rows = conn.execute(
+        f"""SELECT pp.decision_key, pp.seq, {cols}
+            FROM decision_parcel_effective pp
+            LEFT JOIN parcels pa ON pa.load_id = pp.load_id AND pa.gpin = pp.display_gpin
+            LEFT JOIN parcel_flood_effective pf ON pf.gpin = pp.display_gpin
+            WHERE pp.fresh = 1 AND pp.decision_key IN ({','.join('?' * len(keys))})
+            ORDER BY pp.decision_key, pp.seq""", keys).fetchall()
+    seen = set()
+    for r in rows:
+        if r["decision_key"] in seen:
+            continue
+        seen.add(r["decision_key"])
+        out[r["decision_key"]] = {f: r[f] for f in PARCEL_FIELDS}
+    return out
+
+
 def _decisions(conn, status, outcome, land_use_label, flood_class, decided_from, decided_to, match_tier):
     _validate_date(decided_from, "decided_from")
     _validate_date(decided_to, "decided_to")
@@ -626,8 +669,10 @@ def _decisions(conn, status, outcome, land_use_label, flood_class, decided_from,
     rows = [dict(r) for r in conn.execute(f"{DECISION_SQL} {where} ORDER BY d.meeting_date DESC, d.decision_key",
                                           params)]
     flood_by_key = land_use_stats.decision_flood(conn, [r["decision_key"] for r in rows])
+    parcel_by_key = _decision_parcels(conn, [r["decision_key"] for r in rows])
     for r in rows:
         r.update(flood_by_key[r["decision_key"]])
+        r.update(parcel_by_key[r["decision_key"]])
     # The flood class is derived per decision (own point, else linked permits),
     # so it is filtered after the query; decision counts are small (hundreds).
     if floods:
@@ -662,6 +707,7 @@ def land_use_decision_detail(decision_key: str):
             raise HTTPException(404, "decision not found")
         row = rows[0]
         row.update(land_use_stats.decision_flood(conn, [decision_key])[decision_key])
+        row.update(_decision_parcels(conn, [decision_key])[decision_key])
         addresses = [dict(r) for r in conn.execute(
             "SELECT seq, source, raw_text, house_from, house_to, street_norm, gpin10, lat, lng, geocode_status "
             "FROM land_use_decision_addresses WHERE decision_key = ? ORDER BY seq", (decision_key,))]
@@ -714,6 +760,28 @@ def land_use_stats_route():
     cfg = _land_use_cfg()
     with _ro() as conn:
         return land_use_stats.compute_land_use_stats(conn, cfg)
+
+
+@app.get("/api/parcels/{gpin}.geojson")
+def parcel_outline(gpin: str, request: Request):
+    """One parcel of the active parcel load as a GeoJSON Feature, for the map
+    popup. Never a city-wide layer. ETag = SHA-256 of the exact bytes."""
+    with _ro() as conn:
+        row = conn.execute(
+            "SELECT pa.gpin, pa.zoning, pa.land_use, pa.prop_class, pa.prop_address, pa.geom_geojson, "
+            "pf.parcel_flood_class FROM parcels pa JOIN parcel_loads l ON l.load_id = pa.load_id AND l.is_active = 1 "
+            "LEFT JOIN parcel_flood_effective pf ON pf.gpin = pa.gpin WHERE pa.gpin = ?", (gpin,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "parcel not in the active parcel load")
+    props = {k: row[k] for k in ("gpin", "zoning", "land_use", "prop_class", "prop_address", "parcel_flood_class")}
+    payload = json.dumps({"type": "Feature", "properties": props, "geometry": json.loads(row["geom_geojson"])},
+                         sort_keys=True, separators=(",", ":")).encode()
+    etag = etag_of(payload)
+    headers = {"ETag": f'"{etag}"', "Cache-Control": "no-cache"}
+    inm = request.headers.get("if-none-match", "")
+    if etag in {t.strip().removeprefix("W/").strip('"') for t in inm.split(",")}:
+        return Response(status_code=304, headers=headers)
+    return Response(payload, media_type="application/geo+json", headers=headers)
 
 
 def _active_flood_load(conn) -> Optional[sqlite3.Row]:
