@@ -30,6 +30,8 @@ from ingest import parcels as P  # noqa: E402
 from shapely.geometry import shape  # noqa: E402
 
 BASE = Path(__file__).resolve().parent.parent
+# subject_kind decision_set rows (cross-row conflicts) take PARCEL_SET_VERDICTS; gpin = street-row
+# parcels, alt_gpin = printed-GPIN parcels.
 REVIEW_COLUMNS = ("subject_kind", "subject_key", "method", "gpin", "alt_gpin", "detail",
                   # filled in by the reviewer, then imported with scripts/review_parcels.py
                   "verdict", "reviewer", "note")
@@ -104,6 +106,41 @@ def match_decisions(conn, index, load_id, everything, ts) -> Counter:
     return out
 
 
+def reconcile_decisions(conn) -> Counter:
+    """Cross-row reconciliation, run after every per-row match and before any
+    linking. G = parcels named by the decision's printed-GPIN rows, S = parcels
+    of its street-address rows (fresh, unambiguous rows only). A street parcel
+    that is not in G is a cross-row conflict: that street row and the GPIN rows
+    are flagged, and none of them feeds same_parcel / gpin linking until a
+    decision-level verdict keeps them. More GPINs than addresses (a
+    multi-parcel application) is NOT a conflict. set_fp fingerprints all of the
+    decision's row matches, so any row change makes a set verdict stale."""
+    rows = conn.execute(
+        "SELECT x.decision_key, x.seq, x.gpin, x.method, x.match_fp, (a.gpin10 IS NOT NULL) AS is_gpin_row "
+        "FROM decision_parcel x JOIN land_use_decision_addresses a ON a.decision_key = x.decision_key AND a.seq = x.seq "
+        "JOIN parcel_loads l ON l.load_id = x.load_id AND l.is_active = 1 "
+        # the row's own facts are current (the view's freshness also needs set_fp, which is set here)
+        "WHERE x.tagged_gpin10 IS a.gpin10 AND x.tagged_house IS a.house_from AND x.tagged_house_to IS a.house_to "
+        "AND x.tagged_street IS a.street_norm AND x.tagged_lat IS a.lat AND x.tagged_lng IS a.lng "
+        "ORDER BY x.decision_key, x.seq").fetchall()
+    by_key: dict[str, list] = {}
+    for r in rows:
+        by_key.setdefault(r["decision_key"], []).append(r)
+    out: Counter = Counter()
+    updates = []
+    for key, rs in by_key.items():
+        usable = [r for r in rs if r["gpin"] and r["method"] not in ("ambiguous", "no_parcel")]
+        g = {r["gpin"] for r in usable if r["is_gpin_row"]}
+        offending = {r["seq"] for r in usable if not r["is_gpin_row"] and g and r["gpin"] not in g}
+        flagged = offending | ({r["seq"] for r in usable if r["is_gpin_row"]} if offending else set())
+        set_fp = P.fingerprint("decision_set", sorted((r["seq"], r["match_fp"]) for r in rs))
+        out["cross_row_conflict_decisions"] += int(bool(offending))
+        for r in rs:
+            updates.append((int(r["seq"] in flagged), set_fp, key, r["seq"]))
+    conn.executemany("UPDATE decision_parcel SET cross_row = ?, set_fp = ? WHERE decision_key = ? AND seq = ?", updates)
+    return out
+
+
 def write_review(conn, path: Path) -> int:
     rows = [("permit", str(r["id"]), r["method"], r["gpin"], r["alt_gpin"],
              f"{r['source_permit_id']} {r['address']} raw GPIN {r['gpin_raw']!r} at ({r['lat']}, {r['lng']})")
@@ -118,6 +155,17 @@ def write_review(conn, path: Path) -> int:
                  "FROM decision_parcel_effective e JOIN decision_parcel x ON x.decision_key = e.decision_key "
                  "AND x.seq = e.seq JOIN land_use_decision_addresses a ON a.decision_key = e.decision_key "
                  "AND a.seq = e.seq WHERE e.fresh = 1 AND e.disputed = 1 AND e.review_verdict IS NULL")]
+    # cross-row conflicts: one row per decision, with both parcel sets and every row's raw text
+    for r in conn.execute(
+            "SELECT e.decision_key, group_concat(CASE WHEN a.gpin10 IS NULL THEN x.gpin END) AS street_parcels, "
+            "group_concat(CASE WHEN a.gpin10 IS NOT NULL THEN x.gpin END) AS gpin_parcels, "
+            "group_concat(a.seq || ': ' || a.raw_text, ' | ') AS rows_text "
+            "FROM decision_parcel_effective e JOIN decision_parcel x ON x.decision_key = e.decision_key AND x.seq = e.seq "
+            "JOIN land_use_decision_addresses a ON a.decision_key = e.decision_key AND a.seq = e.seq "
+            "WHERE e.fresh = 1 AND e.cross_row_conflict = 1 AND e.set_verdict IS NULL GROUP BY e.decision_key"):
+        rows.append(("decision_set", r["decision_key"], "cross_row", r["street_parcels"], r["gpin_parcels"],
+                     f"street-row parcels {r['street_parcels']} vs printed-GPIN parcels {r['gpin_parcels']}; "
+                     f"rows: {r['rows_text']}"))
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -143,6 +191,7 @@ def main(argv=None) -> int:
             print(f"parcel load {load['load_id']}: {len(index.rows)} parcels")
             pm = match_permits(conn, index, load["load_id"], args.all, ts)
             dm = match_decisions(conn, index, load["load_id"], args.all, ts)
+            dm.update(reconcile_decisions(conn))  # before any linking reads link_gpin
             print(f"permits:   {dict(sorted(pm.items()))}")
             print(f"decisions: {dict(sorted(dm.items()))}")
             untagged = conn.execute("SELECT COUNT(*) FROM permit_parcel_effective e JOIN permits p ON p.id = e.permit_id "

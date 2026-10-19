@@ -4,7 +4,11 @@ reports/parcel_review.csv.
 A dispute is a GPIN match (or printed GPIN / address) and a point that land on
 different parcels. Until resolved it is excluded from same_parcel linking.
 Verdicts: gpin_correct (keep the GPIN parcel), point_correct (use the point's
-parcel -- requires alt_gpin), unresolvable (stays excluded). Rows with a blank
+parcel -- requires alt_gpin), unresolvable (stays excluded). Cross-row
+conflicts (subject_kind decision_set: a street-address parcel not among the
+decision's printed-GPIN parcels) take rows_consistent (multi-parcel
+application, all rows usable), gpin_rows_correct, street_rows_correct or
+unresolvable; they go stale when any of the decision's rows change. Rows with a blank
 verdict are skipped; every other row needs a reviewer. The whole file is
 validated first; any invalid row means nothing is written.
 
@@ -52,13 +56,29 @@ def main(argv=None) -> int:
         rows = [{k: (v or "").strip() for k, v in r.items()} for r in csv.DictReader(fh)]
     ts = db_module.now_iso()
     with db_module.db() as conn:
-        ok, errors = [], []
+        ok, errors, sets = [], [], []
         for i, r in enumerate(rows, 2):
             if not r.get("verdict"):
                 continue
             kind, key = r.get("subject_kind", ""), r.get("subject_key", "")
+            if kind == "decision_set":
+                if r["verdict"] not in db_module.PARCEL_SET_VERDICTS:
+                    errors.append(f"line {i}: decision_set verdict must be one of {db_module.PARCEL_SET_VERDICTS}")
+                if not r.get("reviewer"):
+                    errors.append(f"line {i}: reviewer is required")
+                cur = conn.execute(
+                    "SELECT MAX(x.set_fp) AS set_fp, MAX(e.cross_row_conflict) AS conflict, MIN(e.fresh) AS fresh "
+                    "FROM decision_parcel x JOIN decision_parcel_effective e ON e.decision_key = x.decision_key "
+                    "AND e.seq = x.seq WHERE x.decision_key = ?", (key,)).fetchone()
+                if cur is None or cur["set_fp"] is None or not cur["fresh"]:
+                    errors.append(f"line {i}: no current parcel match for decision {key!r} -- rerun scripts/match_parcels.py")
+                elif not cur["conflict"]:
+                    errors.append(f"line {i}: decision {key} has no cross-row conflict")
+                else:
+                    sets.append((key, r["verdict"], cur["set_fp"], r.get("reviewer"), r.get("note") or None, ts))
+                continue
             if kind not in ("permit", "decision"):
-                errors.append(f"line {i}: subject_kind must be permit or decision")
+                errors.append(f"line {i}: subject_kind must be permit, decision or decision_set")
                 continue
             if r["verdict"] not in db_module.PARCEL_REVIEW_VERDICTS:
                 errors.append(f"line {i}: verdict must be one of {db_module.PARCEL_REVIEW_VERDICTS}")
@@ -82,7 +102,12 @@ def main(argv=None) -> int:
                ON CONFLICT(subject_kind, subject_key) DO UPDATE SET verdict = excluded.verdict,
                    reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
                    reviewed_at = excluded.reviewed_at""", ok)
-    print(f"{len(ok)} parcel verdict(s) imported; rerun scripts/link_decisions_permits.py to apply them to links")
+        conn.executemany(
+            """INSERT INTO decision_parcel_set_review (decision_key, verdict, reviewed_fp, reviewer, note, reviewed_at)
+               VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_key) DO UPDATE SET verdict = excluded.verdict,
+                   reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
+                   reviewed_at = excluded.reviewed_at""", sets)
+    print(f"{len(ok) + len(sets)} parcel verdict(s) imported; rerun scripts/link_decisions_permits.py to apply them to links")
     return 0
 
 

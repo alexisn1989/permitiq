@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -46,6 +46,9 @@ PERMIT_PARCEL_METHODS = ("gpin14", "gpin10_unique", "point_in_parcel", "ambiguou
                          "not_geocoded_no_gpin")
 DECISION_PARCEL_METHODS = ("gpin10_unique", "address_exact", "point_in_parcel", "ambiguous", "no_parcel")
 PARCEL_REVIEW_VERDICTS = ("gpin_correct", "point_correct", "unresolvable")
+# Decision-level verdicts for a cross-row conflict (a street row's parcel is
+# not among the decision's printed-GPIN parcels).
+PARCEL_SET_VERDICTS = ("rows_consistent", "gpin_rows_correct", "street_rows_correct", "unresolvable")
 
 
 class DatabaseNotReady(Exception):
@@ -797,6 +800,143 @@ def _widen_link_tiers(conn) -> None:
         conn.execute(statement)
 
 
+# Schema v6 (real-data hardening). (1) Cross-row reconciliation: a decision
+# whose street-address parcel is not among its printed-GPIN parcels is a
+# cross-row conflict; those rows feed no parcel or GPIN link until a
+# decision-level verdict (decision_parcel_set_review, tied to set_fp) keeps
+# them. (2) Status order: a stale outcome review reads outcome_review_stale
+# even when the item also has source conflicts (has_conflicts shows both).
+# (3) source_dates / quality_tallies for the runbook and /api/quality.
+_SCHEMA_V6_COLUMNS = (("decision_parcel", "cross_row", "INTEGER NOT NULL DEFAULT 0"),
+                      ("decision_parcel", "set_fp", "TEXT"))
+_SCHEMA_V6_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS decision_parcel_set_review (
+        decision_key TEXT PRIMARY KEY,
+        verdict      TEXT NOT NULL CHECK (verdict IN
+            ('rows_consistent','gpin_rows_correct','street_rows_correct','unresolvable')),
+        reviewed_fp  TEXT NOT NULL,
+        reviewer     TEXT NOT NULL,
+        note         TEXT,
+        reviewed_at  TEXT NOT NULL
+    )
+    """,
+    # Source dates recorded by the CLI writers (runbook), served by /api/data-as-of.
+    """
+    CREATE TABLE IF NOT EXISTS source_dates (
+        source      TEXT PRIMARY KEY,
+        as_of       TEXT,
+        detail_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )
+    """,
+    # Accuracy tallies imported by scripts/accuracy_tally.py with the data
+    # snapshot they were computed on; /api/quality withholds them when stale.
+    """
+    CREATE TABLE IF NOT EXISTS quality_tallies (
+        tally_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        tallied_at    TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        result_json   TEXT NOT NULL,
+        synthetic     INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    "DROP VIEW IF EXISTS land_use_decision_status",
+    """
+    CREATE VIEW IF NOT EXISTS land_use_decision_status AS
+    SELECT s.decision_key, s.meeting_date, s.land_use_label, s.outcome_evidence,
+      CASE WHEN s.review_valid THEN s.review_outcome END AS verified_outcome,
+      s.review_outcome AS reviewed_outcome_any,
+      s.has_conflicts,
+      (SELECT COUNT(*) FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                              AND k.link_state = 'candidate') AS n_candidate_links,
+      (SELECT COUNT(*) FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                              AND k.link_state = 'confirmed') AS n_confirmed_links,
+      CASE
+        WHEN s.has_review AND NOT s.review_valid                                             THEN 'outcome_review_stale'
+        WHEN s.has_conflicts
+             AND NOT (s.review_valid AND length(trim(COALESCE(s.conflict_resolution, ''))) > 0) THEN 'quarantined'
+        WHEN NOT s.has_review                                                                THEN 'outcome_unverified'
+        WHEN s.review_outcome NOT IN ('approved','approved_with_conditions')                 THEN 'not_approved'
+        WHEN NOT EXISTS (SELECT 1 FROM land_use_decision_addresses a
+                         WHERE a.decision_key = s.decision_key)                              THEN 'address_unparsed'
+        WHEN c.locality IS NULL OR s.meeting_date IS NULL OR s.meeting_date < c.backfill_from
+             OR c.last_refresh_at IS NULL
+             OR julianday('now') - julianday(c.last_refresh_at) > c.max_staleness_days       THEN 'observation_uncertain'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                                     AND k.link_state = 'confirmed') THEN 'confirmed_permit'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links_effective k
+                     WHERE k.decision_key = s.decision_key)                                  THEN 'candidate_permit'
+        WHEN date(s.meeting_date, '+' || c.link_window_months || ' months') < date(c.last_refresh_at)
+                                                                                             THEN 'no_candidate_window_expired'
+        ELSE 'no_candidate_permit'
+      END AS status
+    FROM (
+      SELECT d.decision_key, d.meeting_date, d.land_use_label, d.outcome_evidence,
+             (r.decision_key IS NOT NULL) AS has_review,
+             COALESCE(r.reviewed_fingerprint IS NOT NULL AND d.facts_fingerprint IS NOT NULL
+                      AND r.reviewed_fingerprint = d.facts_fingerprint, 0) AS review_valid,
+             r.verified_outcome AS review_outcome, r.conflict_resolution,
+             EXISTS (SELECT 1 FROM land_use_decision_conflicts x WHERE x.decision_key = d.decision_key) AS has_conflicts
+      FROM land_use_decisions d
+      LEFT JOIN decision_outcome_review r ON r.decision_key = d.decision_key
+    ) s
+    LEFT JOIN permit_coverage c ON c.locality = 'virginia_beach'
+    """,
+    "DROP VIEW IF EXISTS decision_parcel_effective",
+    """
+    CREATE VIEW IF NOT EXISTS decision_parcel_effective AS
+    SELECT s.decision_key, s.seq, s.fresh,
+      CASE WHEN s.fresh = 1 THEN s.method ELSE 'untagged' END AS parcel_state,
+      CASE WHEN s.fresh = 1 THEN s.load_id END AS load_id,
+      CASE WHEN s.fresh = 1 THEN s.method END AS method,
+      CASE WHEN s.fresh = 1 THEN s.disputed END AS disputed,
+      CASE WHEN s.fresh = 1 THEN s.cross_row END AS cross_row_conflict,
+      CASE WHEN s.fresh = 1 THEN
+        CASE WHEN s.disputed = 1 AND s.cross_row = 1 THEN 'both' WHEN s.disputed = 1 THEN 'within_row'
+             WHEN s.cross_row = 1 THEN 'cross_row' END END AS dispute_reason,
+      CASE WHEN s.fresh = 1 THEN s.verdict END AS review_verdict,
+      CASE WHEN s.fresh = 1 THEN s.set_verdict END AS set_verdict,
+      CASE WHEN s.fresh = 1 THEN
+        CASE WHEN s.verdict = 'point_correct' THEN s.alt_gpin ELSE s.gpin END END AS display_gpin,
+      CASE WHEN s.fresh = 1 THEN s.alt_gpin END AS alt_gpin,
+      CASE WHEN s.fresh = 1 AND s.gpin IS NOT NULL AND s.method NOT IN ('ambiguous','no_parcel') AND s.set_ok = 1 THEN
+        CASE WHEN s.disputed = 0 THEN s.gpin
+             WHEN s.verdict = 'gpin_correct' THEN s.gpin
+             WHEN s.verdict = 'point_correct' THEN s.alt_gpin END END AS link_gpin,
+      CASE WHEN s.fresh = 1 AND (s.set_ok = 0 OR (s.disputed = 1
+                AND (s.verdict IS NULL OR s.verdict IN ('unresolvable', 'point_correct')))) THEN 0 ELSE 1 END
+        AS gpin_trusted
+    FROM (
+      SELECT t.*,
+             -- a cross-row conflicted row is usable only with a current decision-level verdict that keeps it
+             CASE WHEN COALESCE(t.cross_row, 0) = 0 THEN 1
+                  WHEN t.set_verdict = 'rows_consistent' THEN 1
+                  WHEN t.set_verdict = 'gpin_rows_correct' AND t.is_gpin_row = 1 THEN 1
+                  WHEN t.set_verdict = 'street_rows_correct' AND t.is_gpin_row = 0 THEN 1
+                  ELSE 0 END AS set_ok
+      FROM (
+        SELECT a.decision_key, a.seq, (a.gpin10 IS NOT NULL) AS is_gpin_row,
+               COALESCE(l.load_id IS NOT NULL AND x.decision_key IS NOT NULL AND x.load_id = l.load_id
+                        AND x.tagged_gpin10 IS a.gpin10 AND x.tagged_house IS a.house_from
+                        AND x.tagged_house_to IS a.house_to AND x.tagged_street IS a.street_norm
+                        AND x.tagged_lat IS a.lat AND x.tagged_lng IS a.lng
+                        -- not reconciled across rows yet (e.g. right after the v6 migration) => not current
+                        AND x.set_fp IS NOT NULL, 0) AS fresh,
+               x.load_id, x.method, x.gpin, x.alt_gpin, x.disputed, x.cross_row, r.verdict, sr.verdict AS set_verdict
+        FROM land_use_decision_addresses a
+        LEFT JOIN parcel_loads l ON l.is_active = 1
+        LEFT JOIN decision_parcel x ON x.decision_key = a.decision_key AND x.seq = a.seq
+        LEFT JOIN parcel_match_review r ON r.subject_kind = 'decision'
+                                       AND r.subject_key = a.decision_key || '#' || a.seq
+                                       AND r.reviewed_fp = x.match_fp
+        LEFT JOIN decision_parcel_set_review sr ON sr.decision_key = a.decision_key AND sr.reviewed_fp = x.set_fp
+      ) t
+    ) s
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -832,6 +972,12 @@ def init_db(db_path: Path | str | None = None) -> None:
             for statement in _SCHEMA_V5_STATEMENTS:
                 conn.execute(statement)
             _widen_link_tiers(conn)
+        if current_version < 6:
+            for table, column, decl in _SCHEMA_V6_COLUMNS:  # idempotent ADD COLUMN
+                if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            for statement in _SCHEMA_V6_STATEMENTS:
+                conn.execute(statement)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
