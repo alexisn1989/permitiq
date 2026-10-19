@@ -124,7 +124,7 @@ let selectedId = null;
 let currentOffset = 0;
 const filters = {
   locality: null, permit_type: "", status: "", status_bucket: null,
-  q: "", issued_from: "", issued_to: "",
+  q: "", issued_from: "", issued_to: "", flood_class: "",
 };
 
 // ---------- map ----------
@@ -183,6 +183,7 @@ function buildParams(extra = {}) {
   if (filters.q) params.set("q", filters.q);
   if (filters.issued_from) params.set("issued_from", filters.issued_from);
   if (filters.issued_to) params.set("issued_to", filters.issued_to);
+  if (filters.flood_class) params.set("flood_class", filters.flood_class);
   for (const [k, v] of Object.entries(extra)) params.set(k, v);
   return params;
 }
@@ -247,6 +248,7 @@ async function refresh({ reset = true, fit = false } = {}) {
   renderPageBanner(listRes.count);
 
   $("export-btn").href = `/api/export.geojson?${buildParams()}`;
+  $("export-csv-btn").href = `/api/export.csv?${buildParams()}`;
 
   if (fit) {
     const pts = permits.filter((p) => p.lat != null).map((p) => [p.lat, p.lng]);
@@ -355,6 +357,7 @@ function popupHtml(p) {
       <h3>${WORK_CATEGORY_ICONS[category]} ${esc(p.address || "(no address on file)")}</h3>
       <p class="pop-sub">${esc(WORK_CATEGORY_LABELS[category])} · ${esc(p.permit_type || "Unknown type")} · ${esc(localityLabel(p.locality))}</p>
       <span class="badge ${esc(p.status_bucket)}">${esc(p.status || "Unknown")}</span>
+      ${floodBadge(p)}
       <div class="pop-actions">
         <button class="btn small" data-detail="${p.id}">View full details</button>
       </div>
@@ -427,6 +430,8 @@ function showDrawer(p) {
     ["Expires", p.expiration_date],
     ["Valuation", p.valuation != null ? `$${Number(p.valuation).toLocaleString()}` : null],
     ["Contractor", p.contractor],
+    ["FEMA flood class", FLOOD_CLASS_LABELS[p.flood_class] || p.flood_class],
+    ["FEMA zone", p.fld_zone ? p.fld_zone + (p.zone_subty ? ` (${p.zone_subty})` : "") : null],
     ["Description", p.description],
   ];
   const rows = fields.map(([label, value]) => {
@@ -532,6 +537,8 @@ $("filter-clear-btn").addEventListener("click", () => {
   filters.issued_from = "";
   filters.issued_to = "";
   filters.status_bucket = null;
+  filters.flood_class = "";
+  renderFloodControls();
   $("filter-q").value = "";
   $("filter-type").value = "";
   $("filter-status").value = "";
@@ -567,6 +574,93 @@ document.addEventListener("keydown", (e) => {
     $("sources-modal").hidden = true;
   }
 });
+
+// ---------- FEMA flood layer ----------
+// Served as fixed grid cells (see /api/flood-zones/index.json); only the
+// cells intersecting the viewport are fetched, cached per etag.
+const SFHA_FILTER = "sfha_v,sfha_a";
+const FLOOD_CLASS_LABELS = {
+  sfha_v: "SFHA – coastal V/VE",
+  sfha_a: "SFHA – A/AE",
+  shaded_x: "Shaded X (0.2% annual chance)",
+  matched_non_sfha: "Mapped, outside SFHA",
+  no_polygon: "No FEMA polygon matched",
+  not_geocoded: "Not geocoded",
+  untagged: "Not yet tagged",
+  out_of_scope: "Not covered (outside Virginia Beach)",
+};
+const FLOOD_COLORS = { sfha_v: "#e0457b", sfha_a: "#3d8bfd", shaded_x: "#f2c94c" };
+const floodLayer = L.layerGroup();
+const floodCellCache = new Map(); // "x/y" -> { etag, layer }
+let floodIndex = null;
+
+function floodBadge(p) {
+  if (!p.flood_class) return "";
+  return `<span class="flood-badge ${esc(p.flood_class)}">${esc(FLOOD_CLASS_LABELS[p.flood_class] || p.flood_class)}${p.fld_zone ? " · " + esc(p.fld_zone) : ""}</span>`;
+}
+
+function renderFloodControls() {
+  $("flood-sfha-chip").classList.toggle("active", filters.flood_class === SFHA_FILTER);
+  $("flood-legend").innerHTML = $("flood-layer-toggle").checked
+    ? Object.entries(FLOOD_COLORS).map(([c, color]) => `
+      <span class="flood-legend-item"><span class="flood-swatch" style="background:${color}"></span>${esc(FLOOD_CLASS_LABELS[c])}</span>`).join("")
+    : "";
+}
+
+async function loadFloodCells() {
+  if (!map.hasLayer(floodLayer)) return;
+  if (!floodIndex) {
+    try {
+      floodIndex = await api("/api/flood-zones/index.json");
+    } catch (err) {
+      toast(`Flood layer unavailable: ${err.message}`, true);
+      $("flood-layer-toggle").checked = false;
+      map.removeLayer(floodLayer);
+      renderFloodControls();
+      return;
+    }
+  }
+  const view = map.getBounds();
+  for (const cell of floodIndex.cells) {
+    const [minx, miny, maxx, maxy] = cell.bbox;
+    if (!view.intersects(L.latLngBounds([miny, minx], [maxy, maxx]))) continue;
+    const key = `${cell.x}/${cell.y}`;
+    const cached = floodCellCache.get(key);
+    if (cached && cached.etag === cell.etag) {
+      if (!floodLayer.hasLayer(cached.layer)) floodLayer.addLayer(cached.layer);
+      continue;
+    }
+    floodCellCache.set(key, { etag: cell.etag, layer: null }); // claim before the await
+    const res = await fetch(`/api/flood-zones/${key}.geojson`);
+    if (!res.ok) { floodCellCache.delete(key); continue; }
+    const layer = L.geoJSON(await res.json(), {
+      interactive: false,
+      style: (f) => ({
+        color: FLOOD_COLORS[f.properties.flood_class] || "#888",
+        weight: 0.5, fillOpacity: 0.28, opacity: 0.6,
+      }),
+    });
+    floodCellCache.set(key, { etag: cell.etag, layer });
+    floodLayer.addLayer(layer);
+  }
+}
+
+$("flood-layer-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    floodLayer.addTo(map);
+    loadFloodCells();
+  } else {
+    map.removeLayer(floodLayer);
+  }
+  renderFloodControls();
+});
+map.on("moveend", () => loadFloodCells());
+$("flood-sfha-chip").addEventListener("click", () => {
+  filters.flood_class = filters.flood_class === SFHA_FILTER ? "" : SFHA_FILTER;
+  renderFloodControls();
+  refreshOrToast({ reset: true });
+});
+renderFloodControls();
 
 // ---------- boot ----------
 boot();

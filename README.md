@@ -199,6 +199,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
+python scripts/migrate_db.py      # create / migrate the schema (the API never does)
 python -m uvicorn app:app --port 8090
 ```
 
@@ -219,6 +220,27 @@ python scripts/geocode_backlog.py --locality all --analyze
 
 `--locality` accepts `norfolk`, `virginia_beach`, or `all`. Re-running is always safe. `--analyze` prints the unmapped-reason breakdown.
 
+### Flood exposure (Virginia Beach, FEMA NFHL)
+
+The API is read-only: it opens SQLite with `mode=ro`, never creates or migrates schema, and answers **503** with a hint until `scripts/migrate_db.py` has run. Flood data is loaded and tagged by CLI writers, in this order:
+
+```powershell
+python scripts/migrate_db.py                 # schema v2: flood tables + permit_flood_effective view
+python scripts/profile_vb_fields.py          # observed PermitType / WorkType / ConstructionType values
+#   -> fill [cohort].include in config/flood_report.toml from that output (ships empty on purpose)
+python scripts/load_flood_zones.py --dry-run # FEMA NFHL layer 28, DFIRM 51810C: feature count, zone mix, cell sizes
+python scripts/load_flood_zones.py
+python scripts/tag_flood_zones.py --dry-run  # before -> after class transitions
+python scripts/tag_flood_zones.py
+python scripts/flood_report.py               # reports/flood_exposure_vb.md + .csv
+```
+
+- **Classes:** `sfha_v` (VE/V), `sfha_a` (AE/A*), `shaded_x` (0.2% annual chance), `matched_non_sfha`, `no_polygon` (geocoded but no FEMA polygon matched — a possible coverage gap, **never** reported as "outside"), `not_geocoded`; derived at read time: `untagged`, `out_of_scope` (localities without a DFIRM, i.e. Norfolk). Overlaps resolve VE/V > AE > other A > shaded X > other; a point on a boundary is inside.
+- **Revisions:** each load is a `flood_zone_loads` row identified by a content hash, not FEMA's vintage label. One active load per DFIRM is enforced by a partial unique index. A tag is current only if it was made against the active load at the permit's current coordinates — defined once in the `permit_flood_effective` view, which every read and the tagger use. Stale tags read as `untagged` with no zone details.
+- **Map layer:** the loader pre-builds 0.05° grid cells (SFHA + shaded X only), each under a hard 2 MB limit after progressive simplification; a load with an oversized cell is stored inactive and the previous load keeps serving. Cells are served as stored bytes with an ETag (304 on `If-None-Match`).
+- **Report definitions:** population = issued, non-void VB permits; cohort = the explicit allowlist in `config/flood_report.toml`; baseline = all issued permits. Shares use matched permits only as the denominator; `no_polygon`, `not_geocoded` and `untagged` are shown beside every row as counts. Shares are suppressed below `min_n` (20). Only context filters (`issued_from`, `issued_to`, `zip`) apply, to cohort and baseline alike. `/api/flood-stats` and `flood_report.py` share one implementation (`ingest/flood_stats.py`).
+- **Caveats:** address point ≠ building footprint; effective FIRM only; issued ≠ built; SFHA ≠ full flood risk.
+
 ---
 
 ## API
@@ -234,8 +256,12 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/stats` | Totals, mapped/unmapped, geocode + status breakdowns |
 | `GET /api/data-status` | Per-locality sync history from `ingestion_runs` |
 | `GET /api/export.geojson` | GeoJSON of mapped permits (capped; errors rather than truncating) |
+| `GET /api/export.csv` | Same filters, all permits incl. unmapped, with flood fields — Power BI-ready |
+| `GET /api/flood-stats` | Flood-exposure shares: cohort vs baseline, by year and ZIP (context filters only; population filters ⇒ 422) |
+| `GET /api/flood-zones/index.json` | Active flood load's display cells (bbox, bytes, etag) |
+| `GET /api/flood-zones/{x}/{y}.geojson` | One display cell (ETag / 304; 413 over the size limit) |
 
-Filters: `locality`, `permit_type`, `status`, `status_bucket`, `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
+Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 
 ---
 
@@ -245,7 +271,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `q`, `issued_from
 python -m pytest tests/ -v
 ```
 
-**189 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**245 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

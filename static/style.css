@@ -395,3 +395,31 @@ input:focus, select:focus, textarea:focus {
   .drawer { width: 100%; }
   .stats { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ---------- FEMA flood layer ---------- */
+.flood-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.flood-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+.flood-toggle input { width: auto; margin: 0; flex: none; }
+.flood-legend { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; font-size: 0.72rem; color: var(--muted, #9aa4b2); }
+.flood-legend:empty { display: none; }
+.flood-legend-item { display: flex; align-items: center; gap: 4px; }
+.flood-swatch { width: 10px; height: 10px; border-radius: 2px; opacity: 0.8; flex: none; }
+.flood-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  border: 1px solid var(--border);
+}
+.flood-badge.sfha_v { border-color: #e0457b; color: #e0457b; }
+.flood-badge.sfha_a { border-color: #3d8bfd; color: #3d8bfd; }
+.flood-badge.shaded_x { border-color: #f2c94c; color: #f2c94c; }
+.flood-badge.no_polygon, .flood-badge.untagged { border-style: dashed; }

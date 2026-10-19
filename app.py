@@ -6,6 +6,15 @@ must never import run_ingest.py and exposes no POST/PUT/PATCH/DELETE routes
 on /api/permits -- it is a read/filter/stats/export layer over data that is
 always synced out-of-band.
 
+Read-only is enforced, not just intended: every route opens the database
+through db_module.db_readonly() (SQLite mode=ro, no journal_mode pragma), and
+importing this module touches no file -- schema creation/migration happens
+only in CLI writers (scripts/migrate_db.py, run_ingest.py). If the database
+is missing or its schema is older than this code, routes answer 503.
+
+Flood fields come from the permit_flood_effective view (db.py), the single
+definition of whether a permit's flood tag is current.
+
 All filtering goes through the parameterized build_filter() below. The only
 SQL identifiers that are ever interpolated directly (never parameterized,
 since SQLite doesn't allow binding column/direction names) are the sort
@@ -15,21 +24,38 @@ before use, so no unvalidated string ever reaches the SQL string.
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import re
 import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
+from ingest import flood_stats
+from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FLOOD_CONFIG_PATH = Path(os.getenv("FLOOD_REPORT_CONFIG", os.path.join(BASE_DIR, "config", "flood_report.toml")))
 
-app = FastAPI(title="PermitIQ", version="1.0.0")
-db_module.init_db()  # schema-only DDL, safe at import time -- see db.py docstring
+app = FastAPI(title="PermitIQ", version="1.1.0")
+# No init_db() here: the API never creates or migrates schema.
+
+
+@contextmanager
+def _ro():
+    """Read-only connection; a missing/outdated database becomes a 503."""
+    try:
+        with db_module.db_readonly() as conn:
+            yield conn
+    except db_module.DatabaseNotReady as e:
+        raise HTTPException(503, {"database": str(e), "action": "run: python scripts/migrate_db.py"}) from None
 
 # ---------------------------------------------------------------------------
 # Locality coverage metadata -- product/coverage decisions, not derived from
@@ -63,6 +89,8 @@ SORT_ORDERS = ("asc", "desc")
 # Explicit allowlist of columns ever returned by /api/permits* -- raw_json is
 # deliberately excluded here, not filtered out after the fact, so there is no
 # path (typo, refactor, etc.) by which it could leak.
+FLOOD_FIELDS = ("flood_class", "fld_zone", "zone_subty", "sfha")
+
 PERMIT_FIELDS = (
     "id", "locality", "source_permit_id", "source_name", "source_url",
     "source_record_url", "source_updated_at", "address", "lat", "lng",
@@ -70,16 +98,29 @@ PERMIT_FIELDS = (
     "permit_type", "status", "status_bucket", "applied_date", "issued_date",
     "finaled_date", "expiration_date", "valuation", "description",
     "contractor", "applicant", "first_seen_at", "ingested_at",
-)
+) + FLOOD_FIELDS
 
 EXPORT_FIELDS = (
     "id", "source_permit_id", "locality", "permit_type", "status", "status_bucket",
     "address", "applied_date", "issued_date", "finaled_date", "expiration_date",
     "valuation", "description", "contractor", "source_name", "source_url",
     "source_record_url", "lat", "lng",
-)
+) + FLOOD_FIELDS
+
+# Every read joins the freshness view; permits columns are always p.-qualified.
+FROM_SQL = "permits p JOIN permit_flood_effective e ON e.permit_id = p.id"
+_FLOOD_SQL = {"flood_class": "e.effective_class", "fld_zone": "e.fld_zone",
+              "zone_subty": "e.zone_subty", "sfha": "e.sfha"}
+
+
+def _select(fields: tuple[str, ...]) -> str:
+    return ", ".join(f"{_FLOOD_SQL.get(f, 'p.' + f)} AS {f}" for f in fields)
+
 
 MAX_EXPORT_FEATURES = 25000
+MAX_EXPORT_CSV_ROWS = 50000
+# Filters that would redefine the flood-stats cohort (see ingest/flood_stats.py).
+FLOOD_STATS_POPULATION_PARAMS = ("locality", "permit_type", "status", "status_bucket", "q", "flood_class")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -102,6 +143,7 @@ def build_filter(
     q: Optional[str] = None,
     issued_from: Optional[str] = None,
     issued_to: Optional[str] = None,
+    flood_class: Optional[list[str]] = None,
 ) -> tuple[str, list]:
     """Shared, fully-parameterized WHERE builder used by /api/permits,
     /api/stats, and /api/export.geojson so filter semantics can never drift
@@ -119,37 +161,57 @@ def build_filter(
     if locality:
         if locality not in ALL_LOCALITY_KEYS:
             raise HTTPException(422, f"unknown locality '{locality}'")
-        clauses.append("locality = ?")
+        clauses.append("p.locality = ?")
         params.append(locality)
     if permit_type:
-        clauses.append("permit_type = ?")
+        clauses.append("p.permit_type = ?")
         params.append(permit_type)
     if status:
-        clauses.append("status = ?")
+        clauses.append("p.status = ?")
         params.append(status)
     if status_bucket:
         if status_bucket not in db_module.STATUS_BUCKETS:
             raise HTTPException(422, f"unknown status_bucket '{status_bucket}'")
-        clauses.append("status_bucket = ?")
+        clauses.append("p.status_bucket = ?")
         params.append(status_bucket)
     if q:
         needle = f"%{q.lower()}%"
         clauses.append(
-            "(lower(address) LIKE ? OR lower(description) LIKE ? OR "
-            "lower(contractor) LIKE ? OR lower(source_permit_id) LIKE ?)"
+            "(lower(p.address) LIKE ? OR lower(p.description) LIKE ? OR "
+            "lower(p.contractor) LIKE ? OR lower(p.source_permit_id) LIKE ?)"
         )
         params.extend([needle, needle, needle, needle])
     if issued_from:
         _validate_date(issued_from, "issued_from")
-        clauses.append("issued_date >= ?")
+        clauses.append("p.issued_date >= ?")
         params.append(issued_from)
     if issued_to:
         _validate_date(issued_to, "issued_to")
-        clauses.append("issued_date <= ?")
+        clauses.append("p.issued_date <= ?")
         params.append(issued_to)
+    classes = parse_flood_classes(flood_class)
+    if classes:
+        clauses.append(f"e.effective_class IN ({', '.join('?' for _ in classes)})")
+        params.extend(classes)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, params
+
+
+def parse_flood_classes(values: Optional[list[str]]) -> list[str]:
+    """Accepts repeated params and/or comma lists (?flood_class=sfha_v,sfha_a).
+    Tokens are trimmed and de-duplicated; any unknown token is a 422."""
+    out: list[str] = []
+    for value in values or []:
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token not in db_module.FLOOD_CLASSES:
+                raise HTTPException(422, f"unknown flood_class {token!r} -- must be one of {db_module.FLOOD_CLASSES}")
+            if token not in out:
+                out.append(token)
+    return out
 
 
 def row_to_permit_dict(row: sqlite3.Row) -> dict:
@@ -166,12 +228,16 @@ def health():
     triggers ingestion or geocoding, never returns a filesystem path or
     traceback."""
     try:
-        with db_module.db() as conn:
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        required = {"permits", "ingestion_runs", "geocode_cache"}
+        with db_module.db_readonly() as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        required = {"permits", "ingestion_runs", "geocode_cache", "permit_flood", "permit_flood_effective"}
         if not required.issubset(tables):
             return JSONResponse({"status": "error", "database": "schema_invalid"}, status_code=503)
-        return {"status": "ok", "database": "ok"}
+        return {"status": "ok", "database": "ok", "schema_version": version}
+    except db_module.DatabaseNotReady as e:
+        return JSONResponse({"status": "error", "database": str(e),
+                             "action": "run: python scripts/migrate_db.py"}, status_code=503)
     except Exception:  # noqa: BLE001 - never leak the underlying exception
         return JSONResponse({"status": "error", "database": "unavailable"}, status_code=503)
 
@@ -185,6 +251,7 @@ def list_permits(
     q: Optional[str] = Query(default=None, max_length=200),
     issued_from: Optional[str] = None,
     issued_to: Optional[str] = None,
+    flood_class: Optional[list[str]] = Query(default=None),
     sort: Optional[str] = None,
     order: str = "desc",
     limit: int = Query(default=1000, ge=1, le=5000),
@@ -196,17 +263,18 @@ def list_permits(
     if order not in SORT_ORDERS:
         raise HTTPException(422, f"order must be one of {SORT_ORDERS}")
 
-    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to)
+    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to,
+                                 flood_class)
 
     if sort:
-        order_sql = f"ORDER BY {sort} {order.upper()}, id DESC"
+        order_sql = f"ORDER BY p.{sort} {order.upper()}, p.id DESC"
     else:
-        order_sql = "ORDER BY COALESCE(issued_date, applied_date) DESC, id DESC"
+        order_sql = "ORDER BY COALESCE(p.issued_date, p.applied_date) DESC, p.id DESC"
 
-    with db_module.db() as conn:
-        total = conn.execute(f"SELECT COUNT(*) FROM permits {where}", params).fetchone()[0]
+    with _ro() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {where}", params).fetchone()[0]
         rows = conn.execute(
-            f"SELECT {', '.join(PERMIT_FIELDS)} FROM permits {where} {order_sql} LIMIT ? OFFSET ?",
+            f"SELECT {_select(PERMIT_FIELDS)} FROM {FROM_SQL} {where} {order_sql} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
 
@@ -221,9 +289,9 @@ def list_permits(
 
 @app.get("/api/permits/{permit_id}")
 def get_permit(permit_id: int):
-    with db_module.db() as conn:
+    with _ro() as conn:
         row = conn.execute(
-            f"SELECT {', '.join(PERMIT_FIELDS)} FROM permits WHERE id = ?", (permit_id,)
+            f"SELECT {_select(PERMIT_FIELDS)} FROM {FROM_SQL} WHERE p.id = ?", (permit_id,)
         ).fetchone()
     if row is None:
         raise HTTPException(404, f"permit {permit_id} not found")
@@ -239,7 +307,7 @@ def facets():
 
     permit_types: dict[str, list] = {}
     statuses: dict[str, list] = {}
-    with db_module.db() as conn:
+    with _ro() as conn:
         for loc in SUPPORTED_LOCALITIES:
             permit_types[loc] = sorted(
                 r[0] for r in conn.execute(
@@ -266,33 +334,38 @@ def stats(
     q: Optional[str] = Query(default=None, max_length=200),
     issued_from: Optional[str] = None,
     issued_to: Optional[str] = None,
+    flood_class: Optional[list[str]] = Query(default=None),
 ):
-    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to)
+    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to,
+                                 flood_class)
 
-    with db_module.db() as conn:
-        total = conn.execute(f"SELECT COUNT(*) FROM permits {where}", params).fetchone()[0]
+    with _ro() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {where}", params).fetchone()[0]
 
-        mapped_where = _append_condition(where, "lat IS NOT NULL")
-        mapped = conn.execute(f"SELECT COUNT(*) FROM permits {mapped_where}", params).fetchone()[0]
+        mapped_where = _append_condition(where, "p.lat IS NOT NULL")
+        mapped = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {mapped_where}", params).fetchone()[0]
 
-        pending_where = _append_condition(where, "geocode_status = 'pending'")
-        pending_geocode = conn.execute(f"SELECT COUNT(*) FROM permits {pending_where}", params).fetchone()[0]
+        pending_where = _append_condition(where, "p.geocode_status = 'pending'")
+        pending_geocode = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {pending_where}", params).fetchone()[0]
 
-        not_found_where = _append_condition(where, "geocode_status = 'not_found'")
-        geocode_not_found = conn.execute(f"SELECT COUNT(*) FROM permits {not_found_where}", params).fetchone()[0]
+        not_found_where = _append_condition(where, "p.geocode_status = 'not_found'")
+        geocode_not_found = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {not_found_where}", params).fetchone()[0]
 
-        no_address_where = _append_condition(where, "geocode_status = 'no_address'")
-        no_address = conn.execute(f"SELECT COUNT(*) FROM permits {no_address_where}", params).fetchone()[0]
+        no_address_where = _append_condition(where, "p.geocode_status = 'no_address'")
+        no_address = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {no_address_where}", params).fetchone()[0]
 
         by_locality = dict(conn.execute(
-            f"SELECT locality, COUNT(*) FROM permits {where} GROUP BY locality", params
+            f"SELECT p.locality, COUNT(*) FROM {FROM_SQL} {where} GROUP BY p.locality", params
         ).fetchall())
         by_status_bucket = dict(conn.execute(
-            f"SELECT status_bucket, COUNT(*) FROM permits {where} GROUP BY status_bucket", params
+            f"SELECT p.status_bucket, COUNT(*) FROM {FROM_SQL} {where} GROUP BY p.status_bucket", params
+        ).fetchall())
+        by_flood_class = dict(conn.execute(
+            f"SELECT e.effective_class, COUNT(*) FROM {FROM_SQL} {where} GROUP BY e.effective_class", params
         ).fetchall())
 
         latest_ingested_at = conn.execute(
-            f"SELECT MAX(ingested_at) FROM permits {where}", params
+            f"SELECT MAX(p.ingested_at) FROM {FROM_SQL} {where}", params
         ).fetchone()[0]
 
     unmapped = total - mapped
@@ -308,6 +381,7 @@ def stats(
         "no_address": no_address,
         "by_locality": by_locality,
         "by_status_bucket": by_status_bucket,
+        "by_flood_class": by_flood_class,
         "latest_ingested_at": latest_ingested_at,
     }
 
@@ -319,7 +393,7 @@ def data_status():
     alone (a locality with permits but a recently-failed refresh should show
     the failure, not look silently fine)."""
     result = []
-    with db_module.db() as conn:
+    with _ro() as conn:
         for key, info in LOCALITY_INFO.items():
             if info["availability"] != "available":
                 result.append({
@@ -380,12 +454,14 @@ def export_geojson(
     q: Optional[str] = Query(default=None, max_length=200),
     issued_from: Optional[str] = None,
     issued_to: Optional[str] = None,
+    flood_class: Optional[list[str]] = Query(default=None),
 ):
-    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to)
-    geo_where = _append_condition(where, "lat IS NOT NULL AND lng IS NOT NULL")
+    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to,
+                                 flood_class)
+    geo_where = _append_condition(where, "p.lat IS NOT NULL AND p.lng IS NOT NULL")
 
-    with db_module.db() as conn:
-        total = conn.execute(f"SELECT COUNT(*) FROM permits {geo_where}", params).fetchone()[0]
+    with _ro() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {geo_where}", params).fetchone()[0]
         if total > MAX_EXPORT_FEATURES:
             raise HTTPException(
                 413,
@@ -393,7 +469,7 @@ def export_geojson(
                 "Narrow your filters and try again.",
             )
         rows = conn.execute(
-            f"SELECT {', '.join(EXPORT_FIELDS)} FROM permits {geo_where} ORDER BY id", params
+            f"SELECT {_select(EXPORT_FIELDS)} FROM {FROM_SQL} {geo_where} ORDER BY p.id", params
         ).fetchall()
 
     features = []
@@ -406,6 +482,114 @@ def export_geojson(
         })
 
     return JSONResponse({"type": "FeatureCollection", "features": features})
+
+
+@app.get("/api/export.csv")
+def export_csv(
+    locality: Optional[str] = None,
+    permit_type: Optional[str] = None,
+    status: Optional[str] = None,
+    status_bucket: Optional[str] = None,
+    q: Optional[str] = Query(default=None, max_length=200),
+    issued_from: Optional[str] = None,
+    issued_to: Optional[str] = None,
+    flood_class: Optional[list[str]] = Query(default=None),
+):
+    """Same filters and fields as the GeoJSON export, as CSV for Power BI.
+    Includes permits without coordinates (their flood_class says so)."""
+    where, params = build_filter(locality, permit_type, status, status_bucket, q, issued_from, issued_to,
+                                 flood_class)
+    with _ro() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM {FROM_SQL} {where}", params).fetchone()[0]
+        if total > MAX_EXPORT_CSV_ROWS:
+            raise HTTPException(413, f"Too many matching records for CSV export ({total} > {MAX_EXPORT_CSV_ROWS}). "
+                                     "Narrow your filters and try again.")
+        rows = conn.execute(f"SELECT {_select(EXPORT_FIELDS)} FROM {FROM_SQL} {where} ORDER BY p.id",
+                            params).fetchall()
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(EXPORT_FIELDS)
+    for row in rows:
+        writer.writerow([row[k] for k in EXPORT_FIELDS])
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="permitiq_permits.csv"'})
+
+
+@app.get("/api/flood-stats")
+def flood_stats_route(
+    request: Request,
+    issued_from: Optional[str] = None,
+    issued_to: Optional[str] = None,
+    zip: Optional[str] = None,  # noqa: A002 - query parameter name
+):
+    """Flood exposure of issued Virginia Beach permits: baseline (all types)
+    and the configured cohort, computed by ingest/flood_stats.py -- the same
+    function scripts/flood_report.py uses. Only context filters are accepted;
+    filters that would redefine the cohort are rejected."""
+    rejected = [k for k in FLOOD_STATS_POPULATION_PARAMS if k in request.query_params]
+    if rejected:
+        raise HTTPException(422, f"flood-stats does not accept {rejected}: the cohort is defined in "
+                                 "config/flood_report.toml; only issued_from, issued_to and zip apply")
+    try:
+        cohort_cfg = flood_stats.load_cohort_config(FLOOD_CONFIG_PATH)
+    except flood_stats.ConfigError:
+        raise HTTPException(503, "flood report cohort config is invalid") from None
+    with _ro() as conn:
+        try:
+            return flood_stats.compute_flood_stats(conn, cohort_cfg, issued_from, issued_to, zip)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+
+
+def _active_flood_load(conn) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT l.load_id, l.content_hash, l.simplify_tolerance FROM flood_zone_loads l "
+        "JOIN flood_locality_dfirm m ON m.dfirm_id = l.dfirm_id "
+        "WHERE m.locality = 'virginia_beach' AND l.is_active = 1").fetchone()
+
+
+@app.get("/api/flood-zones/index.json")
+def flood_zones_index():
+    """Grid cells of the active flood load that have drawable polygons."""
+    with _ro() as conn:
+        load = _active_flood_load(conn)
+        if load is None:
+            return {"load_id": None, "cell_size": CELL_SIZE, "max_cell_bytes": MAX_FLOOD_CELL_BYTES, "cells": []}
+        cells = conn.execute(
+            "SELECT cell_x, cell_y, bytes, etag FROM flood_display_cells WHERE load_id = ? ORDER BY cell_x, cell_y",
+            (load["load_id"],)).fetchall()
+    return {
+        "load_id": load["load_id"], "content_hash": load["content_hash"],
+        "simplify_tolerance": load["simplify_tolerance"], "cell_size": CELL_SIZE,
+        "max_cell_bytes": MAX_FLOOD_CELL_BYTES,
+        "cells": [{"x": c["cell_x"], "y": c["cell_y"], "bbox": cell_bbox(c["cell_x"], c["cell_y"]),
+                   "bytes": c["bytes"], "etag": c["etag"]} for c in cells],
+    }
+
+
+@app.get("/api/flood-zones/{cell_x}/{cell_y}.geojson")
+def flood_zone_cell(cell_x: int, cell_y: int, request: Request):
+    """One grid cell of the drawable flood layer: the exact bytes stored at
+    load time (never re-serialized), under a hard size limit, with an ETag."""
+    with _ro() as conn:
+        load = _active_flood_load(conn)
+        if load is None:
+            raise HTTPException(404, "no active flood-zone load; run scripts/load_flood_zones.py")
+        row = conn.execute(
+            "SELECT geojson, bytes, etag FROM flood_display_cells WHERE load_id = ? AND cell_x = ? AND cell_y = ?",
+            (load["load_id"], cell_x, cell_y)).fetchone()
+    if row is None:
+        payload = empty_cell_bytes()
+        etag = etag_of(payload)
+    else:
+        payload, etag = bytes(row["geojson"]), row["etag"]
+        if len(payload) > MAX_FLOOD_CELL_BYTES:
+            raise HTTPException(413, f"flood cell exceeds {MAX_FLOOD_CELL_BYTES} bytes")
+    headers = {"ETag": f'"{etag}"', "Cache-Control": "no-cache"}
+    inm = request.headers.get("if-none-match", "")
+    if etag in {t.strip().removeprefix("W/").strip('"') for t in inm.split(",")}:
+        return Response(status_code=304, headers=headers)
+    return Response(payload, media_type="application/geo+json", headers=headers)
 
 
 @app.get("/")
