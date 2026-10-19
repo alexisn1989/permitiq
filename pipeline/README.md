@@ -14,11 +14,12 @@ tracks:
 | Code-enforcement violations | VB ArcGIS FeatureServer (URL/fields unverified) | `ingest_violations.py` |
 | Planning applications | Planning Commission / Council agenda PDFs, read by Gemini | `scan_planning_gemini.py` → `ingest_planning.py` |
 | FEMA flood zones | FEMA NFHL layer 28, DFIRM 51810C | `scripts/load_fema_nfhl.py` |
+| Parcel + assessment enrichment | FiscalMapIQ database (Neon), nightly copy | `sync_fiscal_data.py` |
 
 ## Layout
 
 ```
-db/001-007_*.sql          schema, views, Power BI role, identity + status ledger
+db/001-008_*.sql          schema, views, Power BI role, identity + status ledger, fiscal enrichment
 permitiq/api.py           FastAPI: /health, /api/{permits,violations,planning}/leads, admin ingest
 permitiq/planning_identity.py   application/occurrence/event identity rules
 permitiq/geo_lite.py      Census -> Nominatim geocoder with a VB bounds check
@@ -32,10 +33,11 @@ data/                     sample planning records (July 14, 2026 Council agenda,
 cd pipeline
 cp .env.example .env        # set POSTGRES_PASSWORD, POWERBI_READER_PASSWORD, DATABASE_URL, ADMIN_TOKEN
 pip install -r requirements.txt
-docker compose up -d db     # first start applies db/001-007
+docker compose up -d db     # first start applies db/001-008
 python scripts/load_fema_nfhl.py
 python ingest_permits.py --inspect && python ingest_permits.py
 python ingest_planning.py --file data/july14_leads_ingest.json
+python sync_fiscal_data.py --dry-run && python sync_fiscal_data.py   # needs FISCALMAP_DATABASE_URL + FISCALMAP_CITY_CODE
 uvicorn permitiq.api:app --reload
 ```
 
@@ -54,7 +56,26 @@ PERMITIQ_TEST_ADMIN_DSN="host=127.0.0.1 port=5432 user=permitiq password=... dbn
 ```
 
 The DSN enables the PostGIS tests (they create and drop throwaway databases;
-needs `psql` on PATH). 51 tests pass against PostgreSQL 16 + PostGIS 3.
+needs `psql` on PATH). 59 tests pass against PostgreSQL 16 + PostGIS 3.
+
+## Fiscal enrichment (migration 008)
+
+`sync_fiscal_data.py` copies FiscalMapIQ `parcels` (latest `data_year` per GPIN)
+and `assessments` (latest `tax_year` per GPIN) into `reference_parcels` /
+`reference_assessments` in one local transaction; a dropped Neon connection
+rolls it back and leaves both tables unchanged. Schedule it nightly (cron /
+Render cron) after FiscalMapIQ's own loads.
+
+- `market_value` is FiscalMapIQ's `total_value` (total assessed value); there is
+  no separate market-value or dwelling/other column upstream.
+- `vw_planning_leads` gains `zoning`, `land_use`, `market_value`, `land_value`,
+  `reference_parcel_gpin`, matched on GPIN digits, and only when a lead's GPIN
+  identifies exactly one parcel (multi-GPIN strings and shared condo bases stay
+  unenriched).
+- Re-running `003_roles.sql` revokes the reference-table grants; re-run 008 after it.
+- FiscalMapIQ's assessment ingestion is blocked on the assessor's bulk-data
+  request (`fiscalmapiq/docs/data_gaps.md`), so `market_value` / `land_value`
+  stay empty until that lands.
 
 ## Status — what has and has not been verified
 
