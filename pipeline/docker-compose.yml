@@ -1,0 +1,42 @@
+# PermitIQ local dev database: PostgreSQL + PostGIS.
+#
+# Usage:
+#   cp .env.example .env        # then set POSTGRES_PASSWORD
+#   docker compose up -d db
+#
+# Everything in ./db/*.sql runs automatically, in filename order, the FIRST
+# time the volume is created (docker-entrypoint-initdb.d semantics). To
+# re-apply after editing (the files are idempotent), run e.g.:
+#   docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < db/002_views.sql
+# To start from scratch: docker compose down -v
+#
+# Apple Silicon: if the image has no arm64 build for the tag, add
+#   platform: linux/amd64
+# under `db`.
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: permitiq-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-permitiq}
+      POSTGRES_USER: ${POSTGRES_USER:-permitiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Read by db/003_roles.sql to set the Power BI login's password.
+      POWERBI_READER_PASSWORD: ${POWERBI_READER_PASSWORD:-}
+    ports:
+      # Bound to localhost only. Power BI Desktop on the same machine can
+      # reach it; nothing on the LAN can.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

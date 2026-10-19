@@ -1,0 +1,36 @@
+[
+  {
+    "application_id": "VBPC-OCC-a5bc731b9990855073a4",
+    "project_name": "SHORE DRIVE AREA PROPERTIES, LLC",
+    "address": "3853 Shore Drive",
+    "application_type": "Conditional Change of Zoning",
+    "proposed_use": "develop a fifty-two (52) condominium project with a small commercial component",
+    "hearing_date": "2026-07-14",
+    "meeting_date": "2026-07-14",
+    "status": "I. PLANNING",
+    "source_excerpt": "SHORE DRIVE AREA PROPERTIES, LLC for a Conditional Change of Zoning from PD-H1 Planned Unit Development District to Conditional B-4 (SD) Mixed Use District and a Conditional Use Permit re develop a fifty-two (52) condominium project with a small commercial component at 3853 Shore Drive parcels directly Southeast of 3853 Shore Drive",
+    "gpin": "1489286485, 1489289308, 1489288247",
+    "case_number": null,
+    "agenda_item": "Agenda Items 13 & 14",
+    "occurrence_key": "occ-v1:fb2942511b95d81fbcbbca1a825ffc1be9c49aca43baca3ebb3f7e364ab2a1e7",
+    "source_document": "user-supplied:gdrive:1nG9i2PZgtYL0eJGLZJyNrwJihDGu-D9b",
+    "source": "manual_entry_city_council_agenda"
+  },
+  {
+    "application_id": "VBPC-OCC-15ae01d0668e848c4e5b",
+    "project_name": "Dragas Associates, Inc.",
+    "address": "2500 Tournament Drive",
+    "application_type": "Purchase and Development Agreement",
+    "proposed_use": "redevelopment of the Virginia Beach National Golf Course",
+    "hearing_date": "2026-07-14",
+    "meeting_date": "2026-07-14",
+    "status": "H. ORDINANCES",
+    "source_excerpt": "Ordinance to DECLARE 300 +/- acres of City-owned property at 2500 Tournament Drive to be in EXCESS of the City's needs and APPROVE the Term Sheet for the redevelopment of the Virginia Beach National Golf Course and AUTHORIZE the City Manager to enter into a Purchase and Development Agreement with Dragas Associates, Inc. re the sale and development of the property",
+    "gpin": "1494-34-4919 and 1494-52-3434",
+    "case_number": null,
+    "agenda_item": null,
+    "occurrence_key": "occ-v1:417717d59fd848eaf58b39880421b406b3bd617965a003c3bbf668a05d843bd0",
+    "source_document": "user-supplied:gdrive:1nG9i2PZgtYL0eJGLZJyNrwJihDGu-D9b",
+    "source": "manual_entry_city_council_agenda"
+  }
+]
