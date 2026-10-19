@@ -106,23 +106,38 @@ def file_sha256(path: Path) -> str:
 
 
 def read_export(path: Path) -> tuple[dict, list[dict]]:
-    """JSONL from tools/export_vb_council_votes.py: an optional {"_meta": ...}
-    header line, then one object per member vote row."""
-    meta, rows = {}, []
+    """JSONL from tools/export_vb_council_votes.py: a required {"_meta": ...}
+    header line carrying the exported row count, then one object per member
+    vote row. The count is checked against the rows actually read, so a
+    truncated (or appended-to) file is refused before anything is ingested."""
+    meta, rows = None, []
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
             obj = json.loads(line)
         except json.JSONDecodeError as e:
-            raise ValueError(f"{path}:{n}: not JSON: {e}") from e
-        if "_meta" in obj:
+            raise ValueError(f"{path}:{n}: not JSON ({e}) -- the export is probably truncated") from e
+        if not isinstance(obj, dict):
+            raise ValueError(f"{path}:{n}: expected a JSON object")
+        if meta is None:
+            if "_meta" not in obj or not isinstance(obj["_meta"], dict):
+                raise ValueError(f"{path}: first line is not the {{\"_meta\": ...}} header -- not an export from "
+                                 "tools/export_vb_council_votes.py, or its header is missing")
             meta = obj["_meta"]
+            if not isinstance(meta.get("rows"), int) or isinstance(meta.get("rows"), bool) or meta["rows"] < 0:
+                raise ValueError(f"{path}: header has no valid integer 'rows' count")
             continue
+        if "_meta" in obj:
+            raise ValueError(f"{path}:{n}: a second _meta header -- files concatenated?")
         missing = [c for c in EXPORT_COLUMNS if c not in obj]
         if missing:
             raise ValueError(f"{path}:{n}: missing columns {missing}")
         rows.append(obj)
+    if meta is None:
+        raise ValueError(f"{path}: empty file -- not an export from tools/export_vb_council_votes.py")
+    if len(rows) != meta["rows"]:
+        raise ValueError(f"{path}: export truncated or altered: header says {meta['rows']} rows, file has {len(rows)}")
     return meta, rows
 
 

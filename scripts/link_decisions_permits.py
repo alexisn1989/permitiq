@@ -88,6 +88,9 @@ def main(argv=None) -> int:
                   f"last refresh {cov['last_refresh_at']} (run {cov['last_refresh_run_id']})")
             print(f"links: {len(result['links'])} -> " + ", ".join(f"{t}/{s}: {n}" for (t, s), n in sorted(tiers.items())))
             print(f"nearby but not linked (review only): {len(result['nearby'])}")
+            for o in result["review_out_of_window"]:
+                print(f"  confirmed review outside window -- ignored: {o['decision_key']} permit {o['permit_id']} "
+                      f"(meeting {o['meeting_date']}, applied {o['applied_date']})")
             print(f"status before: {before}\nstatus after:  {after}")
             if args.dry_run:
                 raise _DryRun

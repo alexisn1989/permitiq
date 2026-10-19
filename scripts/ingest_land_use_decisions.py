@@ -42,6 +42,7 @@ geocoder = geocode.geocode_address  # indirection so tests can stub the network
 
 REVIEW_COLUMNS = ("decision_key", "meeting_date", "land_use_label", "outcome_evidence", "evidence_pattern",
                   "result_raw", "yes_count", "no_count", "absent_count", "abstain_count", "title", "conflicts",
+                  "previous_verified_outcome",
                   # filled in by the reviewer, then imported with review_land_use.py --outcomes
                   "verified_outcome", "evidence", "reviewer", "conflict_resolution", "resolved_title")
 
@@ -50,7 +51,8 @@ def counts(conn) -> dict:
     q = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
     return {"decisions": q("SELECT COUNT(*) FROM land_use_decisions"),
             "quarantined": q("SELECT COUNT(DISTINCT decision_key) FROM land_use_decision_conflicts"),
-            "addresses": q("SELECT COUNT(*) FROM land_use_decision_addresses")}
+            "addresses": q("SELECT COUNT(*) FROM land_use_decision_addresses"),
+            "stale_reviews": q("SELECT COUNT(*) FROM land_use_decision_status WHERE status = 'outcome_review_stale'")}
 
 
 def upsert(conn, d: land_use.Decision, sha: str, ts: str) -> None:
@@ -58,10 +60,10 @@ def upsert(conn, d: land_use.Decision, sha: str, ts: str) -> None:
         """INSERT INTO land_use_decisions (decision_key, meeting_id, resolution_id, meeting_date, title,
                title_truncated, result_raw, yes_count, no_count, absent_count, abstain_count, member_rows,
                outcome_evidence, evidence_pattern, land_use_label, matched_pattern, source_file_sha256,
-               ingested_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ingested_at, updated_at, facts_fingerprint)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(decision_key) DO UPDATE SET
-               meeting_date = excluded.meeting_date, title = excluded.title,
+               meeting_date = excluded.meeting_date, facts_fingerprint = excluded.facts_fingerprint, title = excluded.title,
                title_truncated = excluded.title_truncated, result_raw = excluded.result_raw,
                yes_count = excluded.yes_count, no_count = excluded.no_count,
                absent_count = excluded.absent_count, abstain_count = excluded.abstain_count,
@@ -71,7 +73,8 @@ def upsert(conn, d: land_use.Decision, sha: str, ts: str) -> None:
                updated_at = excluded.updated_at""",
         (d.decision_key, d.meeting_id, d.resolution_id, d.meeting_date, d.title, int(d.title_truncated),
          d.result_raw, d.counts["yes"], d.counts["no"], d.counts["absent"], d.counts["abstain"], d.member_rows,
-         d.outcome_evidence, d.evidence_pattern, d.land_use_label, d.matched_pattern, sha, ts, ts))
+         d.outcome_evidence, d.evidence_pattern, d.land_use_label, d.matched_pattern, sha, ts, ts,
+         db_module.facts_fingerprint(d.title, d.result_raw, d.meeting_date, d.conflicts)))
     conn.execute("DELETE FROM land_use_decision_conflicts WHERE decision_key = ?", (d.decision_key,))
     conn.executemany(
         "INSERT INTO land_use_decision_conflicts (decision_key, field, variants_json, detected_at) VALUES (?, ?, ?, ?)",
@@ -82,15 +85,16 @@ def upsert(conn, d: land_use.Decision, sha: str, ts: str) -> None:
 def write_review_csv(conn, path: Path) -> int:
     rows = conn.execute(
         """SELECT d.*, (SELECT json_group_object(x.field, json(x.variants_json)) FROM land_use_decision_conflicts x
-                        WHERE x.decision_key = d.decision_key) AS conflicts
-           FROM land_use_decisions d LEFT JOIN decision_outcome_review r ON r.decision_key = d.decision_key
-           WHERE r.decision_key IS NULL ORDER BY d.meeting_date, d.decision_key""").fetchall()
+                        WHERE x.decision_key = d.decision_key) AS conflicts,
+                  s.reviewed_outcome_any AS previous_verified_outcome
+           FROM land_use_decisions d JOIN land_use_decision_status s ON s.decision_key = d.decision_key
+           WHERE s.verified_outcome IS NULL ORDER BY d.meeting_date, d.decision_key""").fetchall()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(REVIEW_COLUMNS)
         for r in rows:
-            w.writerow([r[c] if c in r.keys() else "" for c in REVIEW_COLUMNS[:12]] + [""] * 5)
+            w.writerow([r[c] if c in r.keys() else "" for c in REVIEW_COLUMNS[:13]] + [""] * 5)
     return len(rows)
 
 
@@ -100,7 +104,7 @@ def geocode_addresses(conn, limit: int | None) -> Counter:
     todo = conn.execute(
         """SELECT a.decision_key, a.seq, a.house_from, a.street_norm FROM land_use_decision_addresses a
            WHERE a.street_norm IS NOT NULL AND a.geocode_status IS NULL
-             AND NOT EXISTS (SELECT 1 FROM decision_permit_links k JOIN permits p ON p.id = k.permit_id
+             AND NOT EXISTS (SELECT 1 FROM decision_permit_links_effective k JOIN permits p ON p.id = k.permit_id
                              WHERE k.decision_key = a.decision_key AND p.lat IS NOT NULL)
            ORDER BY a.decision_key, a.seq""").fetchall()
     out: Counter = Counter()
@@ -169,6 +173,10 @@ def main(argv=None) -> int:
                 (RUN_LOCALITY, ts, db_module.now_iso(), stats["member_rows"], len(decisions), f"sha256={sha[:16]}"))
             n_review = write_review_csv(conn, args.reports_dir / "land_use_review.csv")
         print(f"  before: {before}\n  after:  {after}")
+        made_stale = after["stale_reviews"] - before["stale_reviews"]
+        if made_stale > 0:
+            print(f"  {made_stale} outcome review(s) made stale: the reviewed title/result/date changed -- "
+                  "re-review them (listed in land_use_review.csv with the previous outcome)")
         print(f"  {n_review} decision(s) await outcome review -> {args.reports_dir / 'land_use_review.csv'}")
 
     if args.geocode and not args.dry_run:

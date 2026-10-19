@@ -7,7 +7,8 @@ host (e.g. the Render shell) and run it there. It changes nothing in VoteIQ.
 * Opens the database with SQLite's mode=ro URI: no statement can write.
 * Checks vb_council_member_votes has the expected columns and exits (code 2)
   listing the real ones if not -- no column is guessed.
-* stdout: a {"_meta": ...} line, then one JSON object per member vote row
+* stdout: a {"_meta": ...} line (with the row count, read in the same
+  snapshot as the rows), then one JSON object per member vote row
   with only meeting_id, resolution_id, meeting_date, title, result,
   member_name, district, vote (no user ids).
 * stderr: the column NAMES of every vb_% table (no data), so we can see
@@ -49,13 +50,23 @@ def main(argv=None) -> int:
         if missing:
             print(f"[FATAL] {TABLE} lacks {missing}; actual columns: {actual}", file=sys.stderr)
             return 2
+        # One read transaction: the header count describes exactly the snapshot
+        # written below, even if VoteIQ writes meanwhile. PermitIQ refuses a
+        # file whose row count differs from this header (truncation check).
+        conn.execute("BEGIN")
         n = conn.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
         out = sys.stdout
         out.write(json.dumps({"_meta": {"table": TABLE, "rows": n, "columns": list(COLUMNS),
                                         "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}}) + "\n")
         cur = conn.execute(f"SELECT {', '.join(COLUMNS)} FROM {TABLE} ORDER BY meeting_date, meeting_id, resolution_id, member_name")
+        written = 0
         for row in cur:
             out.write(json.dumps(dict(zip(COLUMNS, row)), ensure_ascii=False) + "\n")
+            written += 1
+        conn.execute("COMMIT")
+        if written != n:  # cannot happen inside one snapshot; fail loudly if it does
+            print(f"[FATAL] wrote {written} rows but counted {n}", file=sys.stderr)
+            return 2
     finally:
         conn.close()
     return 0

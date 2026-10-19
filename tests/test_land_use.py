@@ -15,6 +15,7 @@ Fixture items (decision_key -> intent):
 """
 
 import csv
+import re
 import importlib.util
 import json
 import sqlite3
@@ -591,3 +592,196 @@ def test_migrate_v2_to_v3_keeps_permits_and_flood_tags(tmp_path):
     with db_module.db_readonly(path) as conn:
         assert conn.execute("SELECT effective_class FROM permit_flood_effective").fetchone()[0] == "sfha_a"
         assert conn.execute("SELECT COUNT(*) FROM land_use_decision_status").fetchone()[0] == 0
+
+
+# ---------- review fixes: export integrity ----------
+
+def _export_variant(env, mutate) -> Path:
+    lines = FIXTURE.read_text().splitlines()
+    path = env["tmp"] / "variant.jsonl"
+    path.write_text("\n".join(mutate(lines)) + "\n")
+    return path
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda ls: ls[:-1], "header says 27 rows, file has 26"),                      # truncated at a line boundary
+    (lambda ls: ls + [ls[-1]], "header says 27 rows, file has 28"),                 # appended / altered
+    (lambda ls: ls[:-1] + [ls[-1][:40]], "probably truncated"),                     # cut mid-line
+    (lambda ls: ls[1:], "header is missing"),                                       # no header
+    (lambda ls: [ls[0].replace('"rows": 27', '"rows": "27"')] + ls[1:], "valid integer 'rows'"),
+    (lambda ls: ls + [ls[0]], "second _meta"),
+])
+def test_export_integrity_refused_before_ingest(env, capsys, mutate, message):
+    path = _export_variant(env, mutate)
+    with pytest.raises(ValueError, match=re.escape(message) if "'" not in message else "rows"):
+        land_use.read_export(path)
+    for extra in ((), ("--dry-run",)):
+        assert ingest_s.main(["--file", str(path), "--config", str(env["cfg"]),
+                              "--reports-dir", str(env["reports"]), *extra]) == 1
+    assert profile_s.main(["--file", str(path), "--config", str(env["cfg"])]) == 1
+    with db_module.db_readonly(env["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM land_use_decisions").fetchone()[0] == 0
+
+
+def test_exporter_header_count_matches_rows_written(tmp_path, capsys):
+    path = tmp_path / "polls.db"
+    _voteiq_db(path, ["id", "user_id", "member_name", "district", "meeting_date", "meeting_id", "resolution_id",
+                      "title", "vote", "result"])
+    with sqlite3.connect(path) as conn:
+        conn.execute("INSERT INTO vb_council_member_votes SELECT * FROM vb_council_member_votes")
+    assert exporter.main([str(path)]) == 0
+    out_path = tmp_path / "export.jsonl"
+    out_path.write_text(capsys.readouterr().out)
+    meta, rows = land_use.read_export(out_path)
+    assert meta["rows"] == len(rows) == 2
+
+
+# ---------- review fixes: stale outcome reviews ----------
+
+def _reingest_with(env, key, field, new_value):
+    mid, rid = key.split(":")[1:]
+    data = [json.loads(x) for x in FIXTURE.read_text().splitlines()]
+    for r in data[1:]:
+        if r["meeting_id"] == mid and r["resolution_id"] == rid:
+            r[field] = new_value
+    path = env["tmp"] / "changed.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in data) + "\n")
+    return ingest_s.main(["--file", str(path), "--config", str(env["cfg"]), "--reports-dir", str(env["reports"])])
+
+
+@pytest.mark.parametrize("field, value", [
+    ("title", "Application of ALPHA LLC for a Change of Zoning at 3855 Shore Drive"),
+    ("result", "Deferred"),
+    ("meeting_date", "2025-01-28"),
+])
+def test_changed_facts_make_review_stale_until_rereviewed(env, field, value):
+    assert ingest(env) == 0 and link(env) == 0
+    approve(env, "vb:M1:R1")
+    assert statuses(env)["vb:M1:R1"] == "candidate_permit"
+    assert _reingest_with(env, "vb:M1:R1", field, value) == 0
+    assert statuses(env)["vb:M1:R1"] == "outcome_review_stale"
+    with db_module.db_readonly(env["db"]) as conn:
+        assert conn.execute("SELECT verified_outcome FROM decision_outcome_review "
+                            "WHERE decision_key = 'vb:M1:R1'").fetchone()[0] == "approved"  # kept for audit
+        assert conn.execute("SELECT verified_outcome FROM land_use_decision_status "
+                            "WHERE decision_key = 'vb:M1:R1'").fetchone()[0] is None
+    review = {r["decision_key"]: r for r in csv.DictReader((env["reports"] / "land_use_review.csv").open())}
+    assert review["vb:M1:R1"]["previous_verified_outcome"] == "approved"
+    assert "vb:M1:R1" not in [d["decision_key"] for d in client.get(
+        "/api/land-use/decisions?outcome=approved").json()["decisions"]]
+    approve(env, "vb:M1:R1")
+    assert statuses(env)["vb:M1:R1"] != "outcome_review_stale"
+
+
+def test_unchanged_reingest_keeps_review_valid(env):
+    assert ingest(env) == 0 and link(env) == 0
+    approve(env, "vb:M1:R1")
+    assert ingest(env) == 0
+    assert statuses(env)["vb:M1:R1"] == "candidate_permit"
+
+
+def test_review_without_fingerprint_is_stale(env):
+    assert ingest(env) == 0 and link(env) == 0
+    approve(env, "vb:M2:R6")
+    with db_module.db(env["db"]) as conn:
+        conn.execute("UPDATE decision_outcome_review SET reviewed_fingerprint = NULL")
+    assert statuses(env)["vb:M2:R6"] == "outcome_review_stale"
+
+
+# ---------- review fixes: one window rule ----------
+
+def test_confirmed_link_outside_window_is_refused(env):
+    assert ingest(env) == 0 and link(env) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        p5, p6, p4 = pid(conn, "P5"), pid(conn, "P6"), pid(conn, "P4")
+    assert review_links(env, [{"decision_key": "vb:M1:R1", "permit_id": p5, "verdict": "confirmed"}]) == 1  # before
+    assert review_links(env, [{"decision_key": "vb:M1:R1", "permit_id": p6, "verdict": "confirmed"}]) == 1  # after
+    assert review_links(env, [{"decision_key": "vb:M1:R1", "permit_id": p5, "verdict": "rejected"}]) == 0   # fine
+    assert review_links(env, [{"decision_key": "vb:M1:R2", "permit_id": p4, "verdict": "confirmed"}]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM decision_link_review WHERE verdict = 'confirmed'").fetchone()[0] == 1
+
+
+def test_shrunk_window_drops_manual_link_on_rebuild(env, capsys):
+    assert ingest(env) == 0 and link(env) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        p4 = pid(conn, "P4")
+    assert review_links(env, [{"decision_key": "vb:M1:R2", "permit_id": p4, "verdict": "confirmed"}]) == 0
+    approve(env, "vb:M1:R2")
+    assert statuses(env)["vb:M1:R2"] == "confirmed_permit"
+    # P4 applied 2025-02-01, 18 days after the 2025-01-14 approval; P3 too. A 0-month window excludes both.
+    env["cfg"].write_text(env["cfg"].read_text().replace("link_window_months = 60", "link_window_months = 0"))
+    capsys.readouterr()
+    assert link(env) == 0
+    assert "confirmed review outside window -- ignored: vb:M1:R2" in capsys.readouterr().out
+    assert ("vb:M1:R2", "P4") not in _links(env)
+    assert statuses(env)["vb:M1:R2"] != "confirmed_permit"
+
+
+def test_out_of_window_link_is_invisible_everywhere(linked):
+    with db_module.db(linked["db"]) as conn:
+        p5 = pid(conn, "P5")  # applied 2024-12-01, before R6's 2025-02-11 meeting
+        conn.execute("INSERT INTO decision_permit_links (decision_key, permit_id, match_tier, matched_on, link_state, "
+                     "is_new_construction, link_run_at) VALUES ('vb:M2:R6', ?, 'manual', 'x', 'confirmed', 1, 'now')",
+                     (p5,))
+        conn.execute("INSERT INTO flood_zone_loads (dfirm_id, content_hash, feature_count, loaded_at, is_active) "
+                     "VALUES ('51810C', 'h', 1, 'now', 1)")
+        conn.execute("INSERT INTO permit_flood (permit_id, load_id, tagged_lat, tagged_lng, flood_class, sfha, "
+                     "fld_zone, tagged_at) VALUES (?, 1, 36.85, -76.0, 'sfha_a', 1, 'AE', 'now')", (p5,))
+    assert statuses(linked)["vb:M2:R6"] == "no_candidate_permit"
+    detail = client.get("/api/land-use/decisions/vb:M2:R6").json()
+    assert detail["links"] == []
+    d = detail["decision"]
+    assert (d["n_confirmed_links"], d["n_candidate_links"]) == (0, 0)
+    assert d["flood_class"] is None and d["flood_source"] is None
+    tier = [x["decision_key"] for x in client.get("/api/land-use/decisions?match_tier=manual").json()["decisions"]]
+    assert "vb:M2:R6" not in tier
+    cfg = land_use.load_config(linked["cfg"])
+    with db_module.db_readonly(linked["db"]) as conn:
+        t = land_use_stats.compute_land_use_stats(conn, cfg)["timing"]["confirmed_only"]["t_first_application"]
+    assert t["n"] == 0
+
+
+def test_month_end_boundary_same_in_python_and_sql(env):
+    with db_module.db(env["db"]) as conn:
+        assert land_use_link.window_end(conn, "2025-01-31", 1) == "2025-03-03"   # SQLite date() arithmetic
+        assert land_use_link.in_window(conn, "2025-01-31", "2025-03-03", 1)
+        assert not land_use_link.in_window(conn, "2025-01-31", "2025-03-04", 1)
+        assert not land_use_link.in_window(conn, "2025-01-31", None, 1)
+        upsert_permits(conn, [vb("B1", "1 EDGE ST", "2025-03-03"), vb("B2", "1 EDGE ST", "2025-03-04")])
+        conn.execute("INSERT INTO land_use_decisions (decision_key, meeting_id, resolution_id, meeting_date, "
+                     "land_use_label, matched_pattern, source_file_sha256, ingested_at, updated_at) "
+                     "VALUES ('vb:X:1', 'X', '1', '2025-01-31', 'rezoning', 'p', 's', 'now', 'now')")
+        conn.execute("INSERT INTO permit_coverage (locality, backfill_from, backfill_run_id, backfill_source, "
+                     "last_refresh_at, link_window_months, max_staleness_days, computed_at) "
+                     "VALUES ('virginia_beach', '2024-06-01', 1, 't', ?, 1, 14, 'now')", (db_module.now_iso(),))
+        for p in ("B1", "B2"):
+            conn.execute("INSERT INTO decision_permit_links (decision_key, permit_id, match_tier, matched_on, "
+                         "link_state, link_run_at) VALUES ('vb:X:1', ?, 'address_exact', 'x', 'candidate', 'now')",
+                         (pid(conn, p),))
+        eff = {r[0] for r in conn.execute("SELECT p.source_permit_id FROM decision_permit_links_effective k "
+                                          "JOIN permits p ON p.id = k.permit_id")}
+    assert eff == {"B1"}
+
+
+# ---------- review fixes: v3 -> v4 migration ----------
+
+def test_migrate_v3_to_v4_backfills_fingerprints_and_stales_old_reviews(env):
+    assert ingest(env) == 0 and link(env) == 0
+    approve(env, "vb:M1:R1")
+    with db_module.db_readonly(env["db"]) as conn:
+        expected = dict(conn.execute("SELECT decision_key, facts_fingerprint FROM land_use_decisions").fetchall())
+    assert expected["vb:M1:R4"]  # quarantined decision has one too
+    # simulate a v3 database: no fingerprints anywhere
+    with db_module.db(env["db"]) as conn:
+        conn.execute("UPDATE land_use_decisions SET facts_fingerprint = NULL")
+        conn.execute("UPDATE decision_outcome_review SET reviewed_fingerprint = NULL")
+        conn.execute("PRAGMA user_version=3")
+    assert review_outcomes(env, [{"decision_key": "vb:M1:R2", "verified_outcome": "approved"}]) == 1  # NULL fp refused
+    db_module.init_db(env["db"])
+    with db_module.db_readonly(env["db"]) as conn:
+        got = dict(conn.execute("SELECT decision_key, facts_fingerprint FROM land_use_decisions").fetchall())
+    assert got == expected                                   # identical to what the ingest computes
+    assert statuses(env)["vb:M1:R1"] == "outcome_review_stale"  # old review stays stale
+    approve(env, "vb:M1:R1")                                  # re-review right after migration, no new ingest
+    assert statuses(env)["vb:M1:R1"] == "candidate_permit"

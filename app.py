@@ -619,7 +619,7 @@ def _decisions(conn, status, outcome, land_use_label, flood_class, decided_from,
         clauses.append("d.meeting_date <= ?")
         params.append(decided_to)
     if tiers:
-        clauses.append(f"EXISTS (SELECT 1 FROM decision_permit_links k WHERE k.decision_key = d.decision_key "
+        clauses.append(f"EXISTS (SELECT 1 FROM decision_permit_links_effective k WHERE k.decision_key = d.decision_key "
                        f"AND k.match_tier IN ({','.join('?' * len(tiers))}))")
         params.extend(tiers)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -669,7 +669,7 @@ def land_use_decision_detail(decision_key: str):
             f"""SELECT k.permit_id, k.match_tier, k.matched_on, k.link_state, k.is_new_construction,
                        p.source_permit_id, p.address, p.permit_type, p.applied_date, p.issued_date,
                        e.effective_class AS flood_class
-                FROM decision_permit_links k JOIN permits p ON p.id = k.permit_id
+                FROM decision_permit_links_effective k JOIN permits p ON p.id = k.permit_id
                 JOIN permit_flood_effective e ON e.permit_id = p.id
                 WHERE k.decision_key = ? ORDER BY k.link_state DESC, p.applied_date""", (decision_key,))]
         conflicts = [dict(r) for r in conn.execute(

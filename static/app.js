@@ -671,10 +671,11 @@ const LANDUSE_STATUS = {
   confirmed_permit: { label: "Permit confirmed", color: "#3d8bfd" },
   no_candidate_window_expired: { label: "No permit, window expired", color: "#93a0b8" },
   observation_uncertain: { label: "Permit window uncertain", color: "#b07cff" },
+  outcome_review_stale: { label: "Outcome changed — re-review", color: "#e67e22" },
   outcome_unverified: { label: "Outcome unverified", color: "#6b7689" },
   not_approved: { label: "Not approved", color: "#e0457b" },
   address_unparsed: { label: "No address", color: "#6b7689" },
-  quarantined: { label: "Quarantined (source conflict)", color: "#e67e22" },
+  quarantined: { label: "Quarantined (source conflict)", color: "#c0392b" },
 };
 const landUseLayer = L.layerGroup();
 // Own pane above permit markers so decisions are never hidden under them.

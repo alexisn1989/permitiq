@@ -1,7 +1,8 @@
 """Stage 2 statistics -- the ONE implementation behind GET /api/land-use/stats
 and scripts/land_use_report.py. Read-only.
 
-Status comes only from the land_use_decision_status view. Time to permit is
+Status comes only from the land_use_decision_status view, and links only
+from decision_permit_links_effective (inside the approval window). Time to permit is
 defined per decision, one observation per measure (MIN over its linked
 permits), over verified-approved decisions whose observation window is
 certain (status confirmed_permit, candidate_permit, no_candidate_permit,
@@ -53,7 +54,7 @@ def _timing_block(conn, measure: str, states: tuple[str, ...], min_n: int, nc_co
     rows = conn.execute(
         f"""SELECT s.decision_key,
                    (SELECT MIN(julianday({col}) - julianday(s.meeting_date))
-                    FROM decision_permit_links k JOIN permits p ON p.id = k.permit_id
+                    FROM decision_permit_links_effective k JOIN permits p ON p.id = k.permit_id
                     WHERE k.decision_key = s.decision_key AND k.link_state IN ({marks})
                       AND {col} IS NOT NULL AND {col} >= s.meeting_date {extra}) AS days
             FROM land_use_decision_status s WHERE s.status IN ({tmarks})""",
@@ -106,7 +107,7 @@ def decision_flood(conn, keys: list[str]) -> dict[str, dict]:
             JOIN decision_flood_effective e ON e.decision_key = a.decision_key AND e.seq = a.seq
             WHERE a.decision_key IN ({marks}) AND a.lat IS NOT NULL AND e.fresh = 1""", keys).fetchall()
     linked = conn.execute(
-        f"""SELECT k.decision_key, k.link_state, e.effective_class, e.fld_zone FROM decision_permit_links k
+        f"""SELECT k.decision_key, k.link_state, e.effective_class, e.fld_zone FROM decision_permit_links_effective k
             JOIN permit_flood_effective e ON e.permit_id = k.permit_id
             WHERE k.decision_key IN ({marks}) AND e.fresh = 1""", keys).fetchall()
     for source, rows in (("decision_point", own),

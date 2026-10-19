@@ -10,6 +10,8 @@ Permit data is never fabricated: init_db() only creates schema. The permits
 table starts empty until run_ingest.py populates it from a verified source.
 """
 
+import hashlib
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -19,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -28,7 +30,7 @@ FLOOD_CLASSES = FLOOD_CLASSES_STORED + ("untagged", "out_of_scope")
 
 # Stage 2 land-use linkage (schema v3). See the land_use_decision_status view.
 LAND_USE_STATUSES = (
-    "quarantined", "outcome_unverified", "not_approved", "address_unparsed", "observation_uncertain",
+    "quarantined", "outcome_review_stale", "outcome_unverified", "not_approved", "address_unparsed", "observation_uncertain",
     "confirmed_permit", "candidate_permit", "no_candidate_permit", "no_candidate_window_expired",
 )
 VERIFIED_OUTCOMES = ("approved", "approved_with_conditions", "denied", "deferred", "withdrawn", "other")
@@ -468,6 +470,92 @@ _SCHEMA_V3_STATEMENTS = [
 ]
 
 
+def facts_fingerprint(title, result_raw, meeting_date, conflicts: dict | None) -> str:
+    """SHA-256 of the facts an outcome review relies on: title, result,
+    meeting date and the source-conflict variants ({field: {value: count}}).
+    A review is valid only while its copy equals the decision's current
+    value. Lives here (pure, no imports from ingest/) so the ingest and the
+    v4 migration backfill hash identically."""
+    payload = {"title": title, "result_raw": result_raw, "meeting_date": meeting_date,
+               "conflicts": conflicts or {}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _backfill_fingerprints(conn) -> None:
+    conflicts: dict = {}
+    for r in conn.execute("SELECT decision_key, field, variants_json FROM land_use_decision_conflicts"):
+        conflicts.setdefault(r["decision_key"], {})[r["field"]] = json.loads(r["variants_json"])
+    rows = conn.execute("SELECT decision_key, title, result_raw, meeting_date FROM land_use_decisions "
+                        "WHERE facts_fingerprint IS NULL").fetchall()
+    conn.executemany("UPDATE land_use_decisions SET facts_fingerprint = ? WHERE decision_key = ?",
+                     [(facts_fingerprint(r["title"], r["result_raw"], r["meeting_date"],
+                                         conflicts.get(r["decision_key"])), r["decision_key"]) for r in rows])
+
+
+# Schema v4 (Stage 2 fixes). Additive. (1) A review is valid only while the
+# facts it was made on are unchanged (fingerprints); older reviews have no
+# fingerprint and read as stale. (2) decision_permit_links_effective is the
+# ONLY read path for links: a link counts only if its permit was applied for
+# on/after the meeting date and within link_window_months of it (SQLite
+# date() arithmetic -- the same function every writer uses).
+_SCHEMA_V4_COLUMNS = (("land_use_decisions", "facts_fingerprint", "TEXT"),
+                       ("decision_outcome_review", "reviewed_fingerprint", "TEXT"))
+_SCHEMA_V4_STATEMENTS = [
+    "DROP VIEW IF EXISTS land_use_decision_status",
+    """
+    CREATE VIEW IF NOT EXISTS decision_permit_links_effective AS
+    SELECT k.decision_key, k.permit_id, k.match_tier, k.matched_on, k.link_state, k.is_new_construction,
+           k.link_run_at, p.applied_date, p.issued_date, d.meeting_date
+    FROM decision_permit_links k
+    JOIN permits p ON p.id = k.permit_id
+    JOIN land_use_decisions d ON d.decision_key = k.decision_key
+    JOIN permit_coverage c ON c.locality = 'virginia_beach'
+    WHERE d.meeting_date IS NOT NULL AND p.applied_date IS NOT NULL
+      AND p.applied_date >= d.meeting_date
+      AND p.applied_date <= date(d.meeting_date, '+' || c.link_window_months || ' months')
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS land_use_decision_status AS
+    SELECT s.decision_key, s.meeting_date, s.land_use_label, s.outcome_evidence,
+      CASE WHEN s.review_valid THEN s.review_outcome END AS verified_outcome,
+      s.review_outcome AS reviewed_outcome_any,
+      (SELECT COUNT(*) FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                              AND k.link_state = 'candidate') AS n_candidate_links,
+      (SELECT COUNT(*) FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                              AND k.link_state = 'confirmed') AS n_confirmed_links,
+      CASE
+        WHEN EXISTS (SELECT 1 FROM land_use_decision_conflicts x WHERE x.decision_key = s.decision_key)
+             AND NOT (s.review_valid AND length(trim(COALESCE(s.conflict_resolution, ''))) > 0) THEN 'quarantined'
+        WHEN s.has_review AND NOT s.review_valid                                             THEN 'outcome_review_stale'
+        WHEN NOT s.has_review                                                                THEN 'outcome_unverified'
+        WHEN s.review_outcome NOT IN ('approved','approved_with_conditions')                 THEN 'not_approved'
+        WHEN NOT EXISTS (SELECT 1 FROM land_use_decision_addresses a
+                         WHERE a.decision_key = s.decision_key)                              THEN 'address_unparsed'
+        WHEN c.locality IS NULL OR s.meeting_date IS NULL OR s.meeting_date < c.backfill_from
+             OR c.last_refresh_at IS NULL
+             OR julianday('now') - julianday(c.last_refresh_at) > c.max_staleness_days       THEN 'observation_uncertain'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links_effective k WHERE k.decision_key = s.decision_key
+                                                                     AND k.link_state = 'confirmed') THEN 'confirmed_permit'
+        WHEN EXISTS (SELECT 1 FROM decision_permit_links_effective k
+                     WHERE k.decision_key = s.decision_key)                                  THEN 'candidate_permit'
+        WHEN date(s.meeting_date, '+' || c.link_window_months || ' months') < date(c.last_refresh_at)
+                                                                                             THEN 'no_candidate_window_expired'
+        ELSE 'no_candidate_permit'
+      END AS status
+    FROM (
+      SELECT d.decision_key, d.meeting_date, d.land_use_label, d.outcome_evidence,
+             (r.decision_key IS NOT NULL) AS has_review,
+             COALESCE(r.reviewed_fingerprint IS NOT NULL AND d.facts_fingerprint IS NOT NULL
+                      AND r.reviewed_fingerprint = d.facts_fingerprint, 0) AS review_valid,
+             r.verified_outcome AS review_outcome, r.conflict_resolution
+      FROM land_use_decisions d
+      LEFT JOIN decision_outcome_review r ON r.decision_key = d.decision_key
+    ) s
+    LEFT JOIN permit_coverage c ON c.locality = 'virginia_beach'
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -492,6 +580,13 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 3:
             for statement in _SCHEMA_V3_STATEMENTS:
                 conn.execute(statement)
+        if current_version < 4:
+            for table, column, decl in _SCHEMA_V4_COLUMNS:  # idempotent ADD COLUMN
+                if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            for statement in _SCHEMA_V4_STATEMENTS:
+                conn.execute(statement)
+            _backfill_fingerprints(conn)  # old reviews keep NULL -> stale until re-reviewed
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

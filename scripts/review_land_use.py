@@ -9,6 +9,12 @@ approved and the only way a candidate link becomes confirmed.
             (addresses are then re-extracted from resolved_title).
 --links     reports/link_review.csv, filled in. Rows with a blank verdict are
             skipped; others need verdict (confirmed | rejected) and reviewer.
+            A confirmed permit must have been applied for on/after the
+            approval and within link_window_months (the same SQLite date rule
+            as the linker and the decision_permit_links_effective view).
+            An outcome review records the decision's facts fingerprint; if
+            the title/result/date later change on re-ingest, the review goes
+            stale and must be redone.
 
 The whole file is validated first; any invalid row means nothing is written.
 Link verdicts take effect immediately (the links are rebuilt) and survive
@@ -50,6 +56,9 @@ def validate_outcomes(conn, rows: list[dict]) -> tuple[list[dict], list[str]]:
         if not conn.execute("SELECT 1 FROM land_use_decisions WHERE decision_key = ?", (dk,)).fetchone():
             errors.append(f"line {i}: unknown decision_key {dk!r}")
             continue
+        if conn.execute("SELECT facts_fingerprint IS NULL FROM land_use_decisions WHERE decision_key = ?",
+                        (dk,)).fetchone()[0]:
+            errors.append(f"line {i}: {dk} has no facts fingerprint -- run scripts/migrate_db.py")
         if r["verified_outcome"] not in db_module.VERIFIED_OUTCOMES:
             errors.append(f"line {i}: verified_outcome must be one of {db_module.VERIFIED_OUTCOMES}")
         if not r.get("evidence"):
@@ -66,7 +75,7 @@ def validate_outcomes(conn, rows: list[dict]) -> tuple[list[dict], list[str]]:
     return ok, errors
 
 
-def validate_links(conn, rows: list[dict]) -> tuple[list[dict], list[str]]:
+def validate_links(conn, rows: list[dict], window_months: int) -> tuple[list[dict], list[str]]:
     ok, errors = [], []
     for i, r in enumerate(rows, 2):
         if not r.get("verdict"):
@@ -80,6 +89,16 @@ def validate_links(conn, rows: list[dict]) -> tuple[list[dict], list[str]]:
         if not r.get("permit_id", "").isdigit() or not conn.execute(
                 "SELECT 1 FROM permits WHERE id = ? AND locality = 'virginia_beach'", (r.get("permit_id"),)).fetchone():
             errors.append(f"line {i}: permit_id {r.get('permit_id')!r} is not a Virginia Beach permit")
+        elif r["verdict"] == "confirmed":
+            d = conn.execute("SELECT meeting_date FROM land_use_decisions WHERE decision_key = ?",
+                             (r.get("decision_key"),)).fetchone()
+            applied = conn.execute("SELECT applied_date FROM permits WHERE id = ?", (r["permit_id"],)).fetchone()[0]
+            meeting = d["meeting_date"] if d else None
+            if not land_use_link.in_window(conn, meeting, applied, window_months):
+                end = land_use_link.window_end(conn, meeting, window_months) if meeting else None
+                errors.append(f"line {i}: permit {r['permit_id']} applied {applied!r} is outside the approval window "
+                              f"{meeting!r} .. {end!r} ({window_months} months); only permits applied for on/after "
+                              "the approval and within the window can be confirmed")
         ok.append(r)
     return ok, errors
 
@@ -92,11 +111,18 @@ def main(argv=None) -> int:
     p.add_argument("--config", type=Path, default=BASE / "config" / "land_use.toml")
     args = p.parse_args(argv)
     ts = db_module.now_iso()
+    cfg = None
+    if args.links:
+        try:
+            cfg = land_use.load_config(args.config)  # the link window is part of validation
+        except ConfigError as e:
+            print(f"[FATAL] {e}", file=sys.stderr)
+            return 1
     with db_module.db() as conn:
         if args.outcomes:
             rows, errors = validate_outcomes(conn, _rows(args.outcomes))
         else:
-            rows, errors = validate_links(conn, _rows(args.links))
+            rows, errors = validate_links(conn, _rows(args.links), cfg["link_window_months"])
         if errors:
             print("[FATAL] nothing written:\n  " + "\n  ".join(errors), file=sys.stderr)
             return 1
@@ -104,13 +130,16 @@ def main(argv=None) -> int:
             for r in rows:
                 conn.execute(
                     """INSERT INTO decision_outcome_review (decision_key, verified_outcome, evidence, reviewer,
-                           conflict_resolution, resolved_title, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                           conflict_resolution, resolved_title, reviewed_at, reviewed_fingerprint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?,
+                               (SELECT facts_fingerprint FROM land_use_decisions WHERE decision_key = ?))
                        ON CONFLICT(decision_key) DO UPDATE SET verified_outcome = excluded.verified_outcome,
+                           reviewed_fingerprint = excluded.reviewed_fingerprint,
                            evidence = excluded.evidence, reviewer = excluded.reviewer,
                            conflict_resolution = excluded.conflict_resolution,
                            resolved_title = excluded.resolved_title, reviewed_at = excluded.reviewed_at""",
                     (r["decision_key"], r["verified_outcome"], r["evidence"], r["reviewer"],
-                     r.get("conflict_resolution") or None, r.get("resolved_title") or None, ts))
+                     r.get("conflict_resolution") or None, r.get("resolved_title") or None, ts, r["decision_key"]))
                 if r.get("resolved_title"):
                     land_use.sync_addresses(conn, r["decision_key"], parse_title_addresses(r["resolved_title"]), "review")
             print(f"{len(rows)} outcome review(s) imported")
@@ -124,11 +153,6 @@ def main(argv=None) -> int:
                  for r in rows])
             print(f"{len(rows)} link verdict(s) imported")
             if conn.execute("SELECT 1 FROM permit_coverage").fetchone():
-                try:
-                    cfg = land_use.load_config(args.config)
-                except ConfigError as e:
-                    print(f"[FATAL] {e}", file=sys.stderr)
-                    raise SystemExit(1) from None
                 land_use_link.rebuild_links(conn, cfg, ts)
                 print("links rebuilt with the new verdicts")
             else:

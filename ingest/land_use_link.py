@@ -18,11 +18,8 @@ run. See the land_use_decision_status view for how both gate the statuses.
 
 from __future__ import annotations
 
-import calendar
 import json
 from collections import defaultdict
-from datetime import date
-
 from ingest.address_norm import gpin10, parse_permit_street
 from ingest.flood_stats import _cohort_sql
 
@@ -34,11 +31,17 @@ class CoverageError(Exception):
     pass
 
 
-def add_months(iso: str, months: int) -> str:
-    d = date.fromisoformat(iso)
-    y, m = divmod(d.month - 1 + months, 12)
-    y, m = d.year + y, m + 1
-    return date(y, m, min(d.day, calendar.monthrange(y, m)[1])).isoformat()
+def window_end(conn, meeting_date: str, months: int) -> str:
+    """Last day a permit application can link: SQLite date() arithmetic, the
+    same expression the decision_permit_links_effective view uses, so the
+    writers and every reader agree on boundary dates (e.g. Jan 31 + 1 month)."""
+    return conn.execute("SELECT date(?, '+' || ? || ' months')", (meeting_date, int(months))).fetchone()[0]
+
+
+def in_window(conn, meeting_date: str | None, applied_date: str | None, months: int) -> bool:
+    if not meeting_date or not applied_date:
+        return False
+    return meeting_date <= applied_date <= window_end(conn, meeting_date, months)
 
 
 def verify_coverage(conn, cfg: dict) -> dict:
@@ -126,7 +129,7 @@ def build_links(conn, cfg: dict) -> tuple[list[dict], list[dict]]:
     nearby: list[dict] = []
     for key, rows in addrs.items():
         start = rows[0]["meeting_date"]
-        end = add_months(start, cfg["link_window_months"])
+        end = window_end(conn, start, cfg["link_window_months"])
         in_window = lambda p: start <= p["applied_date"] <= end  # noqa: E731
         hits = []
         for a in rows:
@@ -167,18 +170,26 @@ def rebuild_links(conn, cfg: dict, ts: str) -> dict:
         if verdict == "rejected":
             continue
         rows.append({**l, "link_state": "confirmed" if verdict == "confirmed" else "candidate"})
-    known = {r[0] for r in conn.execute("SELECT decision_key FROM land_use_decisions")}
-    vb = {r[0] for r in conn.execute("SELECT id FROM permits WHERE locality = ?", (LOCALITY,))}
+    meeting = dict(conn.execute("SELECT decision_key, meeting_date FROM land_use_decisions").fetchall())
+    applied = dict(conn.execute("SELECT id, applied_date FROM permits WHERE locality = ?", (LOCALITY,)).fetchall())
+    out_of_window = []
     for (dk, pid), verdict in reviews.items():
-        if verdict == "confirmed" and (dk, pid) not in auto and dk in known and pid in vb:
-            rows.append({"decision_key": dk, "permit_id": pid, "match_tier": "manual",
-                         "matched_on": "review", "link_state": "confirmed"})
+        if verdict != "confirmed" or (dk, pid) in auto or dk not in meeting or pid not in applied:
+            continue
+        # A confirmed pair must still satisfy the window: the window may have
+        # shrunk, or the meeting/applied date changed, since the review.
+        if not in_window(conn, meeting[dk], applied[pid], cfg["link_window_months"]):
+            out_of_window.append({"decision_key": dk, "permit_id": pid, "meeting_date": meeting[dk],
+                                  "applied_date": applied[pid]})
+            continue
+        rows.append({"decision_key": dk, "permit_id": pid, "match_tier": "manual",
+                     "matched_on": "review", "link_state": "confirmed"})
     conn.executemany(
         """INSERT INTO decision_permit_links (decision_key, permit_id, match_tier, matched_on, link_state,
                is_new_construction, link_run_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
         [(r["decision_key"], r["permit_id"], r["match_tier"], r["matched_on"], r["link_state"],
           None if nc is None else int(r["permit_id"] in nc), ts) for r in rows])
-    return {"links": rows, "nearby": nearby}
+    return {"links": rows, "nearby": nearby, "review_out_of_window": out_of_window}
 
 
 def status_counts(conn) -> dict:
