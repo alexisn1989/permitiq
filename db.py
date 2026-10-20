@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -937,6 +937,34 @@ _SCHEMA_V6_STATEMENTS = [
 ]
 
 
+# Schema v7 (first real run). permit_backfill_checks records the proof that a
+# permit backfill is complete: the source's own count and OBJECTID set for the
+# backfill's where clause vs what the database holds. The linker accepts a
+# backfill run only with a verified check (land_use_link.verify_coverage).
+_SCHEMA_V7_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS permit_backfill_checks (
+        check_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        backfill_run_id    INTEGER NOT NULL,
+        where_clause       TEXT NOT NULL,
+        source_count       INTEGER NOT NULL,
+        source_ids         INTEGER NOT NULL,
+        db_ids             INTEGER NOT NULL,
+        truly_missing      INTEGER NOT NULL,
+        dup_permit_number  INTEGER NOT NULL,
+        no_permit_number   INTEGER NOT NULL,
+        extra_in_db        INTEGER NOT NULL,
+        dup_objectids_db   INTEGER NOT NULL,
+        null_date_source   INTEGER NOT NULL,
+        topped_up          INTEGER NOT NULL DEFAULT 0,
+        per_year_json      TEXT NOT NULL,
+        verified           INTEGER NOT NULL CHECK (verified IN (0, 1)),
+        checked_at         TEXT NOT NULL
+    )
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -977,6 +1005,9 @@ def init_db(db_path: Path | str | None = None) -> None:
                 if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             for statement in _SCHEMA_V6_STATEMENTS:
+                conn.execute(statement)
+        if current_version < 7:
+            for statement in _SCHEMA_V7_STATEMENTS:
                 conn.execute(statement)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

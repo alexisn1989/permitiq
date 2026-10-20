@@ -107,6 +107,10 @@ def env(tmp_path, monkeypatch):
             "INSERT INTO ingestion_runs (locality, started_at, completed_at, status, fetched_count, since_date) "
             "VALUES ('virginia_beach', ?, ?, 'success', 7, '2024-06-01')",
             (db_module.now_iso(), db_module.now_iso())).lastrowid
+        conn.execute("INSERT INTO permit_backfill_checks (backfill_run_id, where_clause, source_count, source_ids, "
+                         "db_ids, truly_missing, dup_permit_number, no_permit_number, extra_in_db, dup_objectids_db, "
+                         "null_date_source, per_year_json, verified, checked_at) "
+                         "VALUES (?, 'test', 0, 0, 0, 0, 0, 0, 0, 0, 0, '[]', 1, 'now')", (run_id,))
     cfg = tmp_path / "land_use.toml"
     cfg.write_text(CONFIG.format(coverage=f'backfill_from = "2024-06-01"\nbackfill_run_id = {run_id}'))
     monkeypatch.setattr(app_module, "LAND_USE_CONFIG_PATH", cfg)

@@ -18,8 +18,9 @@ pair with no automatic match is added as tier 'manual'. Reviews live in
 their own table, so rebuilding the links never loses them.
 
 Coverage: the observation window is only as good as the permit data. The
-backfill start is a NAMED, verified ingestion run (config [coverage]), never
-the earliest permit on file; the last refresh is the latest successful VB
+backfill start is a NAMED ingestion run (config [coverage]) whose completeness
+was proven against the source (permit_backfill_checks, verified = 1 --
+scripts/verify_permit_backfill.py), never the earliest permit on file; the last refresh is the latest successful VB
 run. See the land_use_decision_status view for how both gate the statuses.
 """
 
@@ -71,6 +72,15 @@ def verify_coverage(conn, cfg: dict) -> dict:
             problems.append(f"run status is {run['status']!r}")
         if not run["since_date"] or run["since_date"] > cfg["backfill_from"]:
             problems.append(f"run since_date {run['since_date']!r} is later than backfill_from {cfg['backfill_from']}")
+    if run is not None and not problems:
+        chk = conn.execute("SELECT verified, where_clause, source_count, db_ids, truly_missing FROM "
+                           "permit_backfill_checks WHERE backfill_run_id = ? ORDER BY check_id DESC LIMIT 1",
+                           (run["id"],)).fetchone()
+        if chk is None:
+            problems.append("no completeness check recorded -- run scripts/verify_permit_backfill.py")
+        elif not chk["verified"]:
+            problems.append(f"completeness check not verified ({chk['where_clause']}: source {chk['source_count']}, "
+                            f"DB {chk['db_ids']}, truly missing {chk['truly_missing']})")
     if problems:
         raise CoverageError(f"backfill_run_id {cfg['backfill_run_id']} does not back backfill_from "
                             f"{cfg['backfill_from']}: {', '.join(problems)}. Recent VB runs: {listing}")

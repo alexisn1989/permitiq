@@ -80,6 +80,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Virginia Beach land-use -> permit report")
     p.add_argument("--config", type=Path, default=BASE / "config" / "land_use.toml")
     p.add_argument("--out", type=Path, default=BASE / "reports")
+    p.add_argument("--provisional", action="store_true",
+                   help="mark every output provisional (outcome reviews not done yet)")
     args = p.parse_args(argv)
     try:
         cfg = land_use.load_config(args.config)
@@ -104,7 +106,10 @@ def main(argv=None) -> int:
         return 1
 
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "land_use_vb.md").write_text(render_markdown(stats, truncated), encoding="utf-8")
+    md = render_markdown(stats, truncated)
+    if args.provisional:
+        md = md.replace("\n", "\n\n> **PROVISIONAL** — Council outcomes not yet reviewed; lead counts are not final.\n", 1)
+    (args.out / "land_use_vb.md").write_text(md, encoding="utf-8")
     with (args.out / "land_use_vb.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["links", "measure", "configured", "n", "n_open", "suppressed", "median_days", "p25_days", "p75_days"])
@@ -116,10 +121,11 @@ def main(argv=None) -> int:
     cov = stats["coverage"]
     with (args.out / "land_use_leads.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["decision_key", "meeting_date", "land_use_label", "verified_outcome", "addresses", "title",
+        w.writerow(["stage", "decision_key", "meeting_date", "land_use_label", "verified_outcome", "addresses", "title",
                     "permits_observed_from", "permits_observed_to"])
         for r in leads:
-            w.writerow([r["decision_key"], r["meeting_date"], r["land_use_label"], r["verified_outcome"],
+            w.writerow(["provisional" if args.provisional else "final", r["decision_key"], r["meeting_date"],
+                        r["land_use_label"], r["verified_outcome"],
                         r["addresses"], r["title"], cov["backfill_from"], cov["last_refresh_at"]])
     print(f"Wrote {args.out / 'land_use_vb.md'}, land_use_vb.csv, land_use_leads.csv ({len(leads)} leads)")
     print(f"status: {stats['by_status']}")

@@ -219,13 +219,27 @@ def accuracy_block(conn) -> dict:
     if changed:
         return {"freshness": "stale", "tallied_at": row["tallied_at"], "changed_since_tally": changed,
                 "note": "data changed since this tally; figures withheld -- re-sample and re-tally"}
+    from ingest import accuracy  # local import: accuracy builds on flood_stats / parcels
+    current = {k: len(v) for k, v in accuracy.populations(conn).items()}
     return {"freshness": "fresh", "tallied_at": row["tallied_at"], "synthetic": bool(row["synthetic"]),
-            "results": json.loads(row["result_json"])}
+            "results": json.loads(row["result_json"]),
+            "current_population": current}  # today's counts, shown beside (never replacing) the sampled N
+
+
+def backfill(conn) -> dict | None:
+    row = conn.execute("SELECT b.* FROM permit_backfill_checks b JOIN permit_coverage c "
+                       "ON c.backfill_run_id = b.backfill_run_id WHERE c.locality = ? "
+                       "ORDER BY b.check_id DESC LIMIT 1", (LOCALITY,)).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    out["per_year"] = json.loads(out.pop("per_year_json"))
+    return out
 
 
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
-            "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn)}
+            "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn)}
 
 
 # ---------- unmatched reasons ----------

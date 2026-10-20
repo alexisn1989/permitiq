@@ -190,8 +190,9 @@ def _rp(pid_, street, applied, gpin="", latlng=(None, None)):
                                  "Zip": "23451"})
 
 
-def _run(args, data_dir, cfg, reviews=None):
-    return runbook.main(["--phase", "full", "--council-export", str(VOTES_FIXTURE), "--nfhl-file", str(NFHL),
+def _run(args, data_dir, cfg, reviews=None, stage="provisional", phase="full"):
+    return runbook.main(["--phase", phase, "--stage", stage, "--council-export", str(VOTES_FIXTURE),
+                         "--nfhl-file", str(NFHL),
                          "--parcels-file", str(PARCELS), "--parcels-count", "11", "--land-use-config", str(cfg),
                          "--no-geocode", "--seed", "7", "--out-root", str(args), "--synthetic",
                          *(["--reviews-dir", str(reviews)] if reviews else [])])
@@ -214,6 +215,10 @@ def base_run(tmp_path_factory):
         rid = conn.execute("INSERT INTO ingestion_runs (locality, started_at, completed_at, status, fetched_count, "
                            "since_date) VALUES ('virginia_beach', ?, ?, 'success', 5, '2024-06-01')",
                            (db_module.now_iso(), db_module.now_iso())).lastrowid
+        conn.execute("INSERT INTO permit_backfill_checks (backfill_run_id, where_clause, source_count, source_ids, "
+                     "db_ids, truly_missing, dup_permit_number, no_permit_number, extra_in_db, dup_objectids_db, "
+                     "null_date_source, per_year_json, verified, checked_at) "
+                     "VALUES (?, 'test', 0, 0, 0, 0, 0, 0, 0, 0, 0, '[]', 1, 'now')", (rid,))
     cfg = root / "land_use.toml"
     cfg.write_text(CONFIG.format(coverage=f'backfill_from = "2024-06-01"\nbackfill_run_id = {rid}'))
     mp = pytest.MonkeyPatch()
@@ -233,7 +238,7 @@ def run_env(base_run, tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(root / "data"))
     monkeypatch.setattr(db_module, "DB_PATH", root / "data" / "permits.db")
     monkeypatch.setattr(app_module, "LAND_USE_CONFIG_PATH", root / "land_use.toml")
-    run_dir = next((root / "reports").glob("run_*_full"))
+    run_dir = next((root / "reports").glob("run_*_full_provisional"))
     return {"root": root, "db": root / "data" / "permits.db", "cfg": root / "land_use.toml", "run": run_dir}
 
 
@@ -247,14 +252,56 @@ def test_runbook_order_manifest_and_same_run_parcel_links(run_env):
     assert "cohort not configured" in st["flood_report"]["reason"]
     assert all(s["status"] in ("ok", "skipped") for s in m["steps"])
     assert m["synthetic"] is True and m["source_dates"]["sources"]["parcels"]["as_of"]
+    assert m["stage"] == "provisional" and st["accuracy_sample"]["status"] == "skipped"
+    assert "provisional" in st["accuracy_sample"]["reason"]
+    assert len(m["db"]["sha256"]) == 64 and m["db"]["bytes"] > 0
     with db_module.db_readonly(run_env["db"]) as conn:  # R6 was ingested in this run and still got a parcel + link
         r6 = conn.execute("SELECT display_gpin FROM decision_parcel_effective WHERE decision_key = 'vb:M2:R6'").fetchone()
         tier = conn.execute("SELECT k.match_tier FROM decision_permit_links k JOIN permits p ON p.id = k.permit_id "
                             "WHERE k.decision_key = 'vb:M2:R6' AND p.source_permit_id = 'M'").fetchone()
     assert r6[0] == "24400000000000" and tier[0] == "same_parcel"
-    for f in ("unmatched_reasons.csv", "accuracy_sample.csv", "accuracy_sample.meta.json", "quality_vb.md"):
+    for f in ("unmatched_reasons.csv", "quality_vb.md", "land_use_vb.md", "land_use_leads.csv"):
         assert (run_env["run"] / f).is_file()
-    assert "SYNTHETIC" in (run_env["run"] / "quality_vb.md").read_text()
+    assert not (run_env["run"] / "accuracy_sample.csv").exists()
+    q = (run_env["run"] / "quality_vb.md").read_text()
+    assert "SYNTHETIC" in q and "PROVISIONAL" in q
+    assert "PROVISIONAL" in (run_env["run"] / "land_use_vb.md").read_text()
+    assert next(csv.reader((run_env["run"] / "land_use_leads.csv").open()))[0] == "stage"
+
+
+def test_final_stage_refused_without_reviews_then_draws_sample(run_env):
+    assert _run(run_env["root"] / "rf", run_env["root"] / "data", run_env["cfg"], stage="final") == 1
+    m = json.loads(next((run_env["root"] / "rf").glob("run_*/run_manifest.json")).read_text())
+    assert m["steps"][-1]["name"] == "stage_check" and "no outcome reviews" in m["steps"][-1]["reason"]
+    reviews = run_env["root"] / "reviews"
+    reviews.mkdir()
+    (reviews / "land_use_review.csv").write_text(
+        "decision_key,verified_outcome,evidence,reviewer\nvb:M2:R9,approved,https://example.invalid/m,t\n")
+    _approve_lead(run_env)  # a review must exist before a final run is allowed to start
+    assert _run(run_env["root"] / "rf2", run_env["root"] / "data", run_env["cfg"], reviews, stage="final") == 0
+    run = next((run_env["root"] / "rf2").glob("run_*_full_final"))
+    meta = json.loads((run / "accuracy_sample.meta.json").read_text())
+    assert meta["strata"]["lead"]["population"] == 1  # drawn from the reviewed snapshot
+    assert "PROVISIONAL" not in (run / "quality_vb.md").read_text()
+
+
+def test_report_phase_keeps_sampled_population(run_env):
+    _approve_lead(run_env)
+    out = run_env["root"] / "s"
+    sheet = _draw(run_env, out)
+    _fill(sheet, lambda r: r.update(same_project="yes", checker="t") if r["stratum"].startswith("link_") else None)
+    meta = json.loads((out / "accuracy_sample.meta.json").read_text())
+    assert tally_s.main([str(sheet), "--apply-links", "--config", str(run_env["cfg"])]) == 0
+    assert _run(run_env["root"] / "rr", run_env["root"] / "data", run_env["cfg"], stage="final", phase="report") == 0
+    run = next((run_env["root"] / "rr").glob("run_*_report_final"))
+    m = json.loads((run / "run_manifest.json").read_text())
+    assert "council_ingest" not in m["order_executed"]
+    assert next(s for s in m["steps"] if s["name"] == "accuracy_sample")["status"] == "skipped"
+    q = json.loads((run / "quality_vb.json").read_text())
+    tier = q["accuracy"]["results"]["links_by_tier"]["same_parcel"]
+    assert tier["population"] == meta["strata"]["link_same_parcel"]["population"]  # frozen N kept
+    assert q["accuracy"]["current_population"]["link_same_parcel"] == 0  # confirmed links left the candidate pool
+    assert "current candidates" in (run / "quality_vb.md").read_text()
 
 
 def test_runbook_imports_reviews_then_relinks(run_env):
@@ -452,3 +499,122 @@ def test_lead_review_csv_is_accepted_by_importer(run_env):
     with db_module.db_readonly(run_env["db"]) as conn:
         r = conn.execute("SELECT verdict, reviewer, note FROM decision_link_review").fetchone()
     assert tuple(r) == ("rejected", "Doe, J.", 'different project: "pool"\nsee minutes')
+
+
+# ---------- first real run: backfill completeness ----------
+
+from ingest import virginia_beach as vb_adapter  # noqa: E402
+
+verify_s = _script("verify_permit_backfill")
+
+
+def _source(rows):
+    """Stub for ingest.virginia_beach.query_json over a list of attribute dicts."""
+    import re as _re
+
+    def matches(where, a):
+        d = a.get("ApplicationDate")
+        if "IS NULL" in where:
+            return not d
+        m = _re.search(r"ApplicationDate >= '([^']+)'", where)
+        if not d or (m and d < m.group(1)):
+            return False
+        y = _re.search(r"LIKE '(\d{4})/%'", where)
+        return not y or d.startswith(y.group(1) + "/")
+
+    def query(params):
+        if "objectIds" in params:
+            ids = {int(x) for x in params["objectIds"].split(",")}
+            return {"features": [{"attributes": a} for a in rows if a["OBJECTID"] in ids]}
+        sel = [a for a in rows if matches(params["where"], a)]
+        if params.get("returnCountOnly"):
+            return {"count": len(sel)}
+        if params.get("returnIdsOnly"):
+            return {"objectIds": [a["OBJECTID"] for a in sel]}
+        raise AssertionError(params)
+    return query
+
+
+def _attrs(oid, number, date_):
+    return {"OBJECTID": oid, "PermitNumber": number, "ApplicationDate": date_, "StreetAddress": f"{oid} TEST ST",
+            "Status": "Active", "PermitType": "Building", "GPIN": "", "IssueDate": None, "FinalDate": None}
+
+
+SOURCE_ROWS = [_attrs(1, "A1", "2021/03/01"), _attrs(2, "A2", "2021/06/01"), _attrs(3, "A3", "2022/02/01"),
+               _attrs(4, "A2", "2022/05/01"),          # same permit number as OBJECTID 2 (amendment row)
+               _attrs(5, None, "2022/07/01"),          # no permit number: the adapter skips these
+               _attrs(6, "A6", None),                  # no ApplicationDate: outside every window
+               _attrs(7, "A7", "2020/12/31")]          # before the window
+
+
+@pytest.fixture
+def backfill_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "bf.db"
+    monkeypatch.setattr(db_module, "DB_PATH", db_path)
+    db_module.init_db(db_path)
+    monkeypatch.setattr(vb_adapter, "query_json", _source(SOURCE_ROWS))
+    # the backfill "skipped a page": OBJECTID 3 never arrived
+    with db_module.db(db_path) as conn:
+        upsert_permits(conn, [vb_adapter._to_permit(a, a["PermitNumber"]) for a in SOURCE_ROWS if a["OBJECTID"] in (1, 2)])
+        conn.execute("INSERT INTO ingestion_runs (locality, started_at, completed_at, status, since_date) "
+                     "VALUES ('virginia_beach', 'now', 'now', 'success', '2021-01-01')")
+    return db_path
+
+
+def test_backfill_gap_detected_topped_up_and_verified(backfill_db, capsys):
+    assert verify_s.main(["--since", "2021-01-01", "--no-top-up"]) == 3
+    out = capsys.readouterr().out
+    assert "truly_missing            1" in out and "dup_permit_number        1" in out
+    assert "no_permit_number         1" in out and "null_date_source         1" in out
+    assert "2022        3           0  <- source > DB" in out
+    assert verify_s.main(["--since", "2021-01-01"]) == 0  # top-up fetches OBJECTID 3 by ID
+    with db_module.db_readonly(backfill_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM permits WHERE source_permit_id = 'A3'").fetchone()[0] == 1
+        rows = conn.execute("SELECT verified, truly_missing, topped_up, dup_permit_number, null_date_source "
+                            "FROM permit_backfill_checks ORDER BY check_id").fetchall()
+    assert [tuple(r) for r in rows] == [(0, 1, 0, 1, 1), (1, 0, 1, 1, 1)]
+
+
+def test_linker_refuses_unverified_backfill(env):
+    assert ingest(env) == 0
+    with db_module.db(env["db"]) as conn:
+        conn.execute("UPDATE permit_backfill_checks SET verified = 0")
+    assert link(env) == 1
+    with db_module.db(env["db"]) as conn:
+        conn.execute("DELETE FROM permit_backfill_checks")
+    assert link(env) == 1
+
+
+def test_handoff_extract_has_no_raw_json_and_records_hash(run_env):
+    out = run_env["root"] / "handoff"
+    assert _script("handoff_extract").main(["--run", str(run_env["run"]), "--out", str(out)]) == 0
+    inv = json.loads((out / "db_inventory.json").read_text())
+    import hashlib
+    assert inv["sha256"] == hashlib.sha256(run_env["db"].read_bytes()).hexdigest()
+    assert inv["tables"]["permits"]["rows"] == 5 and "raw_json" in inv["tables"]["permits"]["columns"]
+    for f in (out / "extract").glob("*.csv"):
+        assert "raw_json" not in f.read_text().splitlines()[0]
+    assert not list(out.rglob("*.db")) and (out / "run" / "run_manifest.json").is_file()
+
+
+def test_profile_phase_order_with_batch_geocode(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_step(self, name, script, args, skip_if=(), gap_codes=frozenset()):
+        calls.append((name, script, [str(a) for a in args]))
+        self.record(name, [script], 0, "t", "t", "ok", None, [], None)
+        return "ok"
+
+    monkeypatch.setattr(runbook.Runner, "step", fake_step)
+    monkeypatch.setattr(runbook, "_db_state", lambda fn: 42)
+    monkeypatch.setattr(runbook, "_db_hash", lambda: {"sha256": "x" * 64, "bytes": 1})
+    assert runbook.main(["--phase", "profile", "--since", "2021-01-01", "--batch-geocode",
+                         "--council-export", str(VOTES_FIXTURE), "--out-root", str(tmp_path)]) == 0
+    names = [c[0] for c in calls]
+    assert names == ["migrate", "permit_ingest", "verify_backfill", "permit_geocode_batch", "profile_permit_fields",
+                     "profile_council_export", "parcel_layer_inspect"]
+    ingest_args = dict(zip(names, [c[2] for c in calls]))
+    assert "--no-geocode" in ingest_args["permit_ingest"] and "2021-01-01" in ingest_args["permit_ingest"]
+    assert ingest_args["verify_backfill"] == ["--since", "2021-01-01", "--run-id", "42"]
+    m = json.loads(next(tmp_path.glob("run_*/run_manifest.json")).read_text())
+    assert m["backfill_run_id"] == 42 and m["db"]["sha256"] == "x" * 64
