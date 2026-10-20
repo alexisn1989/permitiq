@@ -237,9 +237,95 @@ def backfill(conn) -> dict | None:
     return out
 
 
+def source_row_counts(conn) -> dict:
+    one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+    return {
+        "permits": one("SELECT COUNT(*) FROM permits WHERE locality = 'virginia_beach'"),
+        "council_decisions": one("SELECT COUNT(*) FROM land_use_decisions"),
+        "council_address_rows": one("SELECT COUNT(*) FROM land_use_decision_addresses"),
+        "fema_zones_active": one("SELECT COUNT(*) FROM flood_zones z JOIN flood_zone_loads l ON l.load_id = z.load_id "
+                                 "JOIN flood_locality_dfirm m ON m.dfirm_id = l.dfirm_id "
+                                 "WHERE m.locality = 'virginia_beach' AND l.is_active = 1"),
+        "parcel_features_received": one("SELECT COALESCE(MAX(received_count), 0) FROM parcel_loads "
+                                        "WHERE is_active = 1"),
+        "parcels_active": one("SELECT COUNT(*) FROM parcels p JOIN parcel_loads l ON l.load_id = p.load_id "
+                              "WHERE l.is_active = 1"),  # usable parcels: features without a GPIN or polygon drop
+    }
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
-            "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn)}
+            "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
+            "source_rows": source_row_counts(conn)}
+
+
+# ---------- run record / locality acceptance checklist ----------
+
+def run_record(manifest: dict | None) -> dict | None:
+    """Every step of the run that did not finish ok (failed, skipped, gap), from run_manifest.json."""
+    if manifest is None:
+        return None
+    steps = manifest.get("steps", [])
+    return {"phase": manifest.get("phase"), "stage": manifest.get("stage"), "steps_total": len(steps),
+            "not_ok": [{"name": s["name"], "status": s["status"], "reason": s.get("reason")}
+                       for s in steps if s.get("status") != "ok"]}
+
+
+CHECKLIST_SOURCES = ("permits", "council_export", "fema", "parcels")
+
+
+def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[dict]:
+    """The standard a locality must meet, filled from the report's own numbers.
+    passed is True / False, or None when the check cannot be run yet (never counted as a pass)."""
+    out = []
+
+    def add(item, passed, detail):
+        out.append({"item": item, "passed": passed, "detail": detail})
+
+    b = q.get("backfill")
+    add("Permit backfill verified", bool(b and b["verified"]),
+        "no completeness check recorded" if not b else
+        f"source {b['source_count']}, DB {b['db_ids']}, truly missing {b['truly_missing']}, "
+        f"no application date {b['null_date_source']}")
+    dates = q.get("refresh_age", {})
+    missing = [s for s in CHECKLIST_SOURCES if not (dates.get(s) or {}).get("as_of")]
+    add("Source dates recorded", not missing, "missing: " + ", ".join(missing) if missing else
+        ", ".join(f"{s} {dates[s]['as_of']}" for s in CHECKLIST_SOURCES))
+    add("Official cross-check (Clerk / Planning actions)", q.get("official_crosscheck", {}).get("passed"),
+        q.get("official_crosscheck", {}).get("detail", "not run yet"))
+    u = q.get("unresolved", {})
+    pending = {k: u.get(k, 0) for k in ("outcome_unverified", "outcome_review_stale", "quarantined")}
+    add("Outcome reviews complete and fresh", not any(pending.values()),
+        ", ".join(f"{k} {v}" for k, v in pending.items()))
+    acc = q.get("accuracy", {})
+    if acc.get("freshness") != "fresh":
+        for item in ("Every link tier sampled", "Leads checked against an independent source",
+                     "Flood disagreements checked"):
+            add(item, None, f"accuracy tally {acc.get('freshness', 'none')}")
+    else:
+        r = acc["results"]
+        short = [f"{t} {v['adjudicated']}/{min(min_n, v['population'])}" for t, v in r["links_by_tier"].items()
+                 if v["adjudicated"] < min(min_n, v["population"])]
+        add("Every link tier sampled", not short, "below target: " + ", ".join(short) if short else
+            f"each tier ≥ min({min_n}, N) adjudicated")
+        lead = r["leads"]
+        need = min(min_n, lead["population"])
+        add("Leads checked against an independent source", lead["adjudicated"] >= need,
+            f"{lead['adjudicated']} of {need} needed (N={lead['population']}, can't tell {lead['cant_tell']})")
+        f = r["flood_disagreements"]
+        checked = f.get("sampled", 0) - f.get("unchecked", 0) - f.get("stale", 0)
+        need = min(min_n, f["population"])
+        add("Flood disagreements checked", checked >= need, f"{checked} of {need} needed (N={f['population']})")
+    open_total = sum(v for v in u.values() if isinstance(v, int))
+    add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
+    if record is None:
+        add("No failed or gap steps", None, "no run manifest given")
+    else:
+        bad = [f"{s['name']} ({s['status']})" for s in record["not_ok"] if s["status"] != "skipped"]
+        skipped = [s["name"] for s in record["not_ok"] if s["status"] == "skipped"]
+        add("No failed or gap steps", not bad, (", ".join(bad) if bad else f"{record['steps_total']} steps, none failed")
+            + (f"; skipped: {', '.join(skipped)}" if skipped else ""))
+    return out
 
 
 # ---------- unmatched reasons ----------

@@ -259,7 +259,8 @@ def main(argv=None) -> int:
             r.skip("accuracy_sample", "provisional stage: samples are drawn only from the reviewed (final) snapshot")
         else:
             r.step("accuracy_sample", "accuracy_sample.py", ["--seed", args.seed, "--out", run_dir, *synth])
-        r.step("quality_report", "quality_report.py", ["--out", run_dir, *synth, *stage_flag])
+        r.step("quality_report", "quality_report.py",
+               ["--out", run_dir, "--manifest", run_dir / "run_manifest.json", *synth, *stage_flag])
     except StepFailed as e:
         manifest["db"] = _db_hash()
         r.save()

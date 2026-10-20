@@ -6,8 +6,13 @@ if that tally's data snapshot still matches the current one -- otherwise it
 is reported as stale and its figures are withheld (same rule as
 GET /api/quality). Per-tier precision only; no unweighted overall figure.
 
+With --manifest (the run's run_manifest.json; the runbook passes it), the
+report adds a Run record (every failed, skipped or gap step) and fills the
+locality acceptance checklist's run line.
+
 Usage:
   python scripts/quality_report.py --out reports/
+  python scripts/quality_report.py --out reports/run_x --manifest reports/run_x/run_manifest.json
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ def _pct(v):
     return "–" if v is None else f"{100 * v:.1f}%"
 
 
+MARK = {True: "pass", False: "**FAIL**", None: "not yet"}
+
+
 def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
     acc = q["accuracy"]
     lines = ["# PermitIQ data quality — Virginia Beach", ""]
@@ -36,6 +44,26 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
         lines += ["> **PROVISIONAL** — Council outcomes not yet reviewed; lead counts are not final.", ""]
     if synthetic or acc.get("synthetic"):
         lines += ["> **SYNTHETIC REHEARSAL** — fixture data, not real results.", ""]
+    if q.get("checklist"):
+        lines += ["## Locality acceptance checklist", "",
+                  "The standard each locality must meet. \"not yet\" is never a pass.", "",
+                  "| check | result | detail |", "|---|---|---|"]
+        lines += [f"| {c['item']} | {MARK[c['passed']]} | {c['detail']} |" for c in q["checklist"]]
+        lines += [""]
+    rec = q.get("run_record")
+    if rec is not None:
+        lines += ["## Run record", "", f"Phase {rec['phase']}, stage {rec['stage']}: {rec['steps_total']} steps.", ""]
+        if rec["not_ok"]:
+            lines += ["| step | status | reason |", "|---|---|---|"]
+            lines += [f"| {s['name']} | {s['status']} | {(s['reason'] or '').replace('|', '/')[:300]} |"
+                      for s in rec["not_ok"]]
+        else:
+            lines += ["Every step finished ok."]
+        lines += [""]
+    if q.get("source_rows"):
+        lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
+        lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]
+        lines += [""]
     lines += ["## Refresh age", "", "| source | as of | age (days) |", "|---|---|---:|"]
     lines += [f"| {k} | {v['as_of']} | {v['age_days'] if v['age_days'] is not None else '–'} |"
               for k, v in q["refresh_age"].items()] or ["| (no source dates recorded) | | |"]
@@ -93,7 +121,10 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, default=BASE / "reports")
     p.add_argument("--synthetic", action="store_true", help="label as a fixture rehearsal")
     p.add_argument("--provisional", action="store_true", help="outcome reviews not done yet: provisional banner")
+    p.add_argument("--manifest", type=Path, help="run_manifest.json: adds the run record")
+    p.add_argument("--min-n", type=int, default=30, help="checklist target per stratum: min(this, N) checked")
     args = p.parse_args(argv)
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else None
     try:
         with db_module.db_readonly() as conn:
             q = quality.quality(conn)
@@ -103,6 +134,8 @@ def main(argv=None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     q["synthetic"] = args.synthetic or bool(q["accuracy"].get("synthetic"))
     q["stage"] = "provisional" if args.provisional else "final"
+    q["run_record"] = quality.run_record(manifest)
+    q["checklist"] = quality.acceptance_checklist(q, q["run_record"], args.min_n)
     (args.out / "quality_vb.md").write_text(render(q, args.synthetic, args.provisional), encoding="utf-8")
     (args.out / "quality_vb.json").write_text(json.dumps(q, indent=1, default=str), encoding="utf-8")
     print(f"Wrote {args.out / 'quality_vb.md'} (accuracy: {q['accuracy']['freshness']})")

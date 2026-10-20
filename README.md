@@ -281,6 +281,7 @@ Matches permits and Council decisions to city parcels (`Property_Information/Map
 ```powershell
 python scripts/migrate_db.py                       # schema v5
 python scripts/load_parcels.py --inspect           # fields, maxRecordCount, lastEditDate, returnCountOnly
+python scripts/inspect_pc_actions_layer.py --out p.json --compare-council  # Planning/Council Actions layer, read-only
 python scripts/load_parcels.py --dry-run
 python scripts/load_parcels.py                     # or: --file vb_parcels.geojson --expected-count N
 python scripts/match_parcels.py --dry-run
@@ -342,6 +343,7 @@ python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re
   - gives a pooled figure only as a labeled population-weighted estimate, when every tier was adjudicated;
   - with `--apply-links`, turns only fresh `same_project` yes/no link rows into link reviews.
 - **`/api/quality` and `quality_report.py`** show live coverage, unresolved cases and refresh age. Accuracy is withheld (`"freshness": "stale"`) whenever the data it was computed on has changed. A re-run that changes nothing keeps the tally fresh.
+- **Locality acceptance checklist and run record.** The quality report opens with the standard a locality must meet. Each line is pass, fail or "not yet", filled from the report's own numbers: backfill verified, source dates, official cross-check, outcome reviews, link tiers / leads / flood disagreements checked to min(30, N), unresolved cases, and no failed or gap steps. Every non-ok step from `run_manifest.json`, plus source row counts, is listed beneath it. "Not yet" is never a pass.
 - **Lead screen.** `/static/lead.html?key=<decision_key>` (also "Open lead details" in the map popup) shows on one screen:
   - the Council decision with its review evidence;
   - the parcel(s) with dispute state and an outline;
@@ -394,7 +396,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**392 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**395 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

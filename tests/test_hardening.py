@@ -618,3 +618,87 @@ def test_profile_phase_order_with_batch_geocode(tmp_path, monkeypatch):
     assert ingest_args["verify_backfill"] == ["--since", "2021-01-01", "--run-id", "42"]
     m = json.loads(next(tmp_path.glob("run_*/run_manifest.json")).read_text())
     assert m["backfill_run_id"] == 42 and m["db"]["sha256"] == "x" * 64
+
+
+# ---------- run record, acceptance checklist, actions-layer profile ----------
+
+def test_quality_report_has_run_record_and_checklist(run_env):
+    md = (run_env["run"] / "quality_vb.md").read_text()
+    assert "## Locality acceptance checklist" in md and "## Run record" in md and "## Source rows" in md
+    q = json.loads((run_env["run"] / "quality_vb.json").read_text())
+    skipped = {s["name"] for s in q["run_record"]["not_ok"] if s["status"] == "skipped"}
+    assert {"council_geocode", "accuracy_sample"} <= skipped
+    items = {c["item"]: c for c in q["checklist"]}
+    assert items["Permit backfill verified"]["passed"] is True
+    assert items["Official cross-check (Clerk / Planning actions)"]["passed"] is None
+    assert items["Every link tier sampled"]["passed"] is None  # provisional: no tally, never a pass
+    assert items["No failed or gap steps"]["passed"] is True and "accuracy_sample" in items["No failed or gap steps"]["detail"]
+    assert q["source_rows"]["permits"] == 5 and q["source_rows"]["parcel_features_received"] == 11 \
+        and q["source_rows"]["parcels_active"] == 10  # the fixture's feature without a GPIN is dropped
+
+
+def _q(**over):
+    tier = {"population": 50, "adjudicated": 30, "cant_tell": 0}
+    q = {"backfill": {"verified": 1, "source_count": 9, "db_ids": 9, "truly_missing": 0, "null_date_source": 0},
+         "refresh_age": {s: {"as_of": "2026-10-01"} for s in quality.CHECKLIST_SOURCES},
+         "unresolved": {"outcome_unverified": 0, "outcome_review_stale": 0, "quarantined": 0},
+         "official_crosscheck": {"passed": True, "detail": "x"},
+         "accuracy": {"freshness": "fresh", "results": {
+             "links_by_tier": {"gpin_exact": dict(tier), "address": {"population": 4, "adjudicated": 4}},
+             "leads": {"population": 10, "adjudicated": 10, "cant_tell": 1},
+             "flood_disagreements": {"population": 3, "sampled": 3, "unchecked": 0, "stale": 0}}}}
+    q.update(over)
+    return q
+
+
+def test_checklist_passes_and_fails_from_numbers():
+    rec = {"steps_total": 3, "not_ok": []}
+    assert all(c["passed"] is True for c in quality.acceptance_checklist(_q(), rec))
+    bad = _q(unresolved={"outcome_unverified": 2, "outcome_review_stale": 0, "quarantined": 0},
+             refresh_age={"permits": {"as_of": "2026-10-01"}})
+    bad["accuracy"]["results"]["links_by_tier"]["gpin_exact"]["adjudicated"] = 12
+    rec_bad = {"steps_total": 3, "not_ok": [{"name": "verify_backfill", "status": "gap", "reason": "r"}]}
+    items = {c["item"]: c for c in quality.acceptance_checklist(bad, rec_bad)}
+    assert items["Outcome reviews complete and fresh"]["passed"] is False
+    assert items["Source dates recorded"]["passed"] is False and "fema" in items["Source dates recorded"]["detail"]
+    assert items["Every link tier sampled"]["passed"] is False and "gpin_exact 12/30" in items["Every link tier sampled"]["detail"]
+    assert items["No failed or gap steps"]["passed"] is False
+    assert quality.acceptance_checklist(_q(), None)[-1]["passed"] is None
+
+
+inspect_pc = _script("inspect_pc_actions_layer")
+
+
+def test_inspect_pc_actions_layer_profile_is_read_only(tmp_path, monkeypatch):
+    ms = lambda d: int(__import__("datetime").datetime.fromisoformat(d + "T05:00:00+00:00").timestamp() * 1000)  # noqa: E731
+    calls = []
+
+    def fake(url, params):
+        calls.append((url, params))
+        if not url.endswith("/query"):
+            return {"name": "PC and Council Actions", "description": "d", "geometryType": "esriGeometryPolygon",
+                    "objectIdField": "OBJECTID", "maxRecordCount": 1000,
+                    "fields": [{"name": "CASE_ID", "type": "esriFieldTypeString", "alias": "Case"},
+                               {"name": "APPROVAL_DATE", "type": "esriFieldTypeDate", "alias": "Approval Date"}]}
+        if params.get("returnCountOnly"):
+            return {"count": 3}
+        if "groupByFieldsForStatistics" in params:
+            return {"features": [{"attributes": {"APPROVAL_DATE": ms("2024-03-05"), "n": 2}},
+                                 {"attributes": {"APPROVAL_DATE": ms("2024-02-14"), "n": 1}}]}
+        if "outStatistics" in params:
+            return {"features": [{"attributes": {"MN": ms("2024-02-14"), "MX": ms("2024-03-05"), "N": 3}}]}
+        return {"features": [{"attributes": {"CASE_ID": "C1", "APPROVAL_DATE": ms("2024-03-05")}}]}
+
+    monkeypatch.setattr(inspect_pc, "fetch_json", fake)
+    monkeypatch.setattr(inspect_pc, "council_meeting_dates", lambda: {"2024-03-05"})
+    out = tmp_path / "p" / "pc_actions_profile.json"
+    assert inspect_pc.main(["--out", str(out), "--compare-council"]) == 0
+    prof = json.loads(out.read_text())
+    assert prof["count"] == 3 and prof["date_fields"]["APPROVAL_DATE"] == {"min": "2024-02-14", "max": "2024-03-05",
+                                                                           "non_null": 3}
+    assert prof["sample"][0]["APPROVAL_DATE"] == "2024-03-05"
+    ev = prof["council_date_evidence"]["by_field"]["APPROVAL_DATE"]
+    assert ev["values"] == 3 and ev["on_council_meeting_date"] == 2 and ev["share"] == 0.6667
+    assert prof["date_meaning"].startswith("undetermined")  # never asserted by the script
+    assert all(p.get("f") == "json" for _, p in calls)
+    assert sorted(x.name for x in tmp_path.rglob("*") if x.is_file()) == ["pc_actions_profile.json"]
