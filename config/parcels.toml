@@ -1,0 +1,13 @@
+# Stage 3 parcel enrichment.
+#
+# Parcel flood classes are a SCREENING ESTIMATE from parcel-polygon area
+# shares. The city's terms: its parcel data is not valid for flood-zone
+# determination.
+
+[flood]
+# A hazard class (V, A, shaded X) decides the parcel class only if it covers
+# at least this share of the parcel; smaller hazard areas give
+# screening_sliver, never matched_non_sfha. Also the threshold for "partly
+# unmapped" (screening_partial_coverage). 0.01 is about the city's stated
+# +/-2-5 ft accuracy on a typical lot.
+min_share = 0.01

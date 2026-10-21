@@ -21,6 +21,7 @@
     <span class="data-as-of" id="data-as-of"></span>
     <button id="sources-btn" class="btn ghost">Data sources</button>
     <a id="export-btn" class="btn ghost" href="/api/export.geojson" download>Export GeoJSON</a>
+    <a id="export-csv-btn" class="btn ghost" href="/api/export.csv" download title="CSV with flood fields, for Power BI">Export CSV</a>
   </div>
 </header>
 
@@ -31,6 +32,18 @@
     <section class="stats stats-wide" id="stats" aria-label="Permit summary"></section>
 
     <section class="legend" id="legend" aria-label="Status legend"></section>
+
+    <section class="flood-panel" aria-label="FEMA flood zones">
+      <label class="flood-toggle"><input type="checkbox" id="flood-layer-toggle"> FEMA flood zones</label>
+      <button class="legend-item" id="flood-sfha-chip" title="Show only permits inside a Special Flood Hazard Area (V or A zones)">In SFHA</button>
+      <div class="flood-legend" id="flood-legend"></div>
+    </section>
+
+    <section class="flood-panel" aria-label="Land-use approvals">
+      <label class="flood-toggle"><input type="checkbox" id="landuse-layer-toggle"> Council land-use decisions</label>
+      <button class="legend-item" id="landuse-leads-chip" title="Verified approvals with no candidate permit in the observed permit data">Approved, no permit yet</button>
+      <div class="flood-legend" id="landuse-legend"></div>
+    </section>
 
     <section class="filters">
       <input id="filter-q" type="search" placeholder="Search address, description, contractor…" autocomplete="off">

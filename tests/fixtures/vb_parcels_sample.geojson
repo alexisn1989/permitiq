@@ -1,0 +1,458 @@
+{
+ "type": "FeatureCollection",
+ "synthetic": true,
+ "note": "Synthetic test fixture for PermitIQ Stage 3 -- NOT real Virginia Beach parcels.",
+ "features": [
+  {
+   "type": "Feature",
+   "id": 1,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.004,
+       36.804
+      ],
+      [
+       -76.002,
+       36.804
+      ],
+      [
+       -76.002,
+       36.806
+      ],
+      [
+       -76.004,
+       36.806
+      ],
+      [
+       -76.004,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 1,
+    "PAR_GPIN": "14892864850000",
+    "PROP_ADDRESS": "3853 SHORE DR",
+    "ZONING": "B-2",
+    "LAND_USE": "COMMERCIAL",
+    "PROP_CLASS": "C",
+    "TAX_AREA": 43560,
+    "FEMA_ZONE_BLDG": "AE"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 2,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.0105,
+       36.804
+      ],
+      [
+       -76.0085,
+       36.804
+      ],
+      [
+       -76.0085,
+       36.806
+      ],
+      [
+       -76.0105,
+       36.806
+      ],
+      [
+       -76.0105,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 2,
+    "PAR_GPIN": "24000000000000",
+    "PROP_ADDRESS": "100 STRADDLE ST",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 3,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -75.99005,
+       36.804
+      ],
+      [
+       -75.985,
+       36.804
+      ],
+      [
+       -75.985,
+       36.806
+      ],
+      [
+       -75.99005,
+       36.806
+      ],
+      [
+       -75.99005,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 3,
+    "PAR_GPIN": "24100000000000",
+    "PROP_ADDRESS": "200 SLIVER ST",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 4,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.036,
+       36.804
+      ],
+      [
+       -76.034,
+       36.804
+      ],
+      [
+       -76.034,
+       36.806
+      ],
+      [
+       -76.036,
+       36.806
+      ],
+      [
+       -76.036,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 4,
+    "PAR_GPIN": "15000000000001",
+    "PROP_ADDRESS": "300 CONDO CT",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.036,
+       36.804
+      ],
+      [
+       -76.034,
+       36.804
+      ],
+      [
+       -76.034,
+       36.806
+      ],
+      [
+       -76.036,
+       36.806
+      ],
+      [
+       -76.036,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 5,
+    "PAR_GPIN": "15000000000002",
+    "PROP_ADDRESS": "300 CONDO CT",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 6,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.07,
+       36.8
+      ],
+      [
+       -76.065,
+       36.81
+      ],
+      [
+       -76.065,
+       36.8
+      ],
+      [
+       -76.07,
+       36.81
+      ],
+      [
+       -76.07,
+       36.8
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 6,
+    "PAR_GPIN": "24200000000000",
+    "PROP_ADDRESS": "400 BOW ST",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 7,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.1,
+       36.9
+      ],
+      [
+       -76.099,
+       36.9
+      ],
+      [
+       -76.099,
+       36.901
+      ],
+      [
+       -76.1,
+       36.901
+      ],
+      [
+       -76.1,
+       36.9
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 7,
+    "PAR_GPIN": "16000000000000",
+    "PROP_ADDRESS": "500 MULTI ST",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 8,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.099,
+       36.9
+      ],
+      [
+       -76.098,
+       36.9
+      ],
+      [
+       -76.098,
+       36.901
+      ],
+      [
+       -76.099,
+       36.901
+      ],
+      [
+       -76.099,
+       36.9
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 8,
+    "PAR_GPIN": "16000000000000",
+    "PROP_ADDRESS": "500 MULTI ST",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 9,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.0412,
+       36.804
+      ],
+      [
+       -76.0388,
+       36.804
+      ],
+      [
+       -76.0388,
+       36.806
+      ],
+      [
+       -76.0412,
+       36.806
+      ],
+      [
+       -76.0412,
+       36.804
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 9,
+    "PAR_GPIN": "24300000000000",
+    "PROP_ADDRESS": "600 PARTIAL RD",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": "X"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 10,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.2,
+       36.7
+      ],
+      [
+       -76.199,
+       36.7
+      ],
+      [
+       -76.199,
+       36.701
+      ],
+      [
+       -76.2,
+       36.701
+      ],
+      [
+       -76.2,
+       36.7
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 10,
+    "PAR_GPIN": "24400000000000",
+    "PROP_ADDRESS": "77 LAKE DR",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 11,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -76.3,
+       36.7
+      ],
+      [
+       -76.299,
+       36.7
+      ],
+      [
+       -76.299,
+       36.701
+      ],
+      [
+       -76.3,
+       36.701
+      ],
+      [
+       -76.3,
+       36.7
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "OBJECTID": 11,
+    "PAR_GPIN": "24500000000000",
+    "PROP_ADDRESS": "10 OLD RD",
+    "ZONING": "R-7.5",
+    "LAND_USE": "RESIDENTIAL",
+    "PROP_CLASS": "R",
+    "TAX_AREA": 21780,
+    "FEMA_ZONE_BLDG": null
+   }
+  }
+ ]
+}

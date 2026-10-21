@@ -1,0 +1,23 @@
+# Stage 1 flood-exposure report: cohort definition.
+#
+# This file intentionally ships UNCONFIGURED (empty include list). Until it is
+# filled in, scripts/flood_report.py refuses to run and /api/flood-stats
+# returns "cohort_configured": false with baseline numbers only.
+#
+# Fill it in from REAL values, never guesses:
+#   python scripts/profile_vb_fields.py
+# lists every observed (PermitType, WorkType, ConstructionType) combination
+# with counts. Copy the combinations that mean "new construction" below.
+# Each entry may use any of the keys permit_type / work_type /
+# construction_type; "*" matches any value; an omitted key also matches any.
+#
+# Example shape only (values must come from the profile output):
+#   include = [
+#     { permit_type = "<observed PermitType>", work_type = "<observed WorkType>" },
+#   ]
+
+[cohort]
+name = "new construction"
+include = []
+# Shares are suppressed (counts only) when fewer matched permits than this.
+min_n = 20
