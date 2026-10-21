@@ -128,6 +128,7 @@ def main(argv=None) -> int:
     p.add_argument("--meta", type=Path)
     p.add_argument("--apply-links", action="store_true")
     p.add_argument("--no-import", action="store_true")
+    p.add_argument("--actor", help="who is applying the links (self-reported; default: the OS user)")
     p.add_argument("--config", type=Path, default=BASE / "config" / "land_use.toml")
     args = p.parse_args(argv)
     meta_path = args.meta or args.sheet.with_name("accuracy_sample.meta.json")
@@ -171,7 +172,10 @@ def main(argv=None) -> int:
                     w.writerow([r["decision_key"], r["permit_id"],
                                 "confirmed" if r["same_project"] == "yes" else "rejected", r["checker"],
                                 f"accuracy sample (seed {meta['seed']}): {r['note']}".strip()])
-            rc = _review_land_use().main(["--links", str(path), "--config", str(args.config)])
+            # provenance = the checked sample sheet (the human-reviewed file); this CSV is derived from it
+            rc = _review_land_use().main(["--links", str(path), "--config", str(args.config),
+                                          "--provenance-file", str(args.sheet),
+                                          *(["--actor", args.actor] if args.actor else [])])
             if rc != 0:
                 print("[FATAL] link verdicts refused by review_land_use.py; tally not imported", file=sys.stderr)
                 return rc

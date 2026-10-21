@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -965,6 +965,217 @@ _SCHEMA_V7_STATEMENTS = [
 ]
 
 
+# Schema v8 (review history). Every change to a human review is recorded by
+# triggers in review_audit, attributed to the import (file + SHA-256 + acting
+# user) that made it. A review write outside db.review_import() aborts, so a
+# write can never inherit another import's file. review_audit and
+# review_imports are append-only: UPDATE, DELETE and INSERT OR REPLACE onto an
+# existing row abort.
+#
+# Not authenticated and not tamper-proof: acting_user is self-reported, and
+# anyone who can write the file can drop the triggers. A future migration
+# that rebuilds a review table (copy-and-rename) must recreate its triggers.
+#
+# INSERT OR REPLACE on a review table fires BEFORE INSERT and AFTER INSERT
+# (no delete trigger), and an upsert fires BEFORE INSERT then UPDATE: so the
+# BEFORE INSERT trigger only stashes the existing row in review_audit_pending,
+# and the AFTER INSERT ("replace" when a row was stashed) or AFTER UPDATE
+# ("update") trigger writes the audit row and clears the stash.
+REVIEW_TABLES = {
+    # table: (primary-key columns -> the subject, every column)
+    "decision_outcome_review": (("decision_key",),
+                                ("conflict_resolution", "decision_key", "evidence", "resolved_title", "reviewed_at",
+                                 "reviewed_fingerprint", "reviewer", "verified_outcome")),
+    "decision_link_review": (("decision_key", "permit_id"),
+                             ("decision_key", "note", "permit_id", "reviewed_at", "reviewer", "verdict")),
+    "parcel_match_review": (("subject_key", "subject_kind"),
+                            ("note", "reviewed_at", "reviewed_fp", "reviewer", "subject_key", "subject_kind",
+                             "verdict")),
+    "decision_parcel_set_review": (("decision_key",),
+                                   ("decision_key", "note", "reviewed_at", "reviewed_fp", "reviewer", "verdict")),
+}
+REVIEW_IMPORT_KINDS = ("outcomes", "links", "parcel", "accuracy_apply", "migration_baseline")
+REVIEW_AUDIT_ACTIONS = ("insert", "update", "delete", "replace", "baseline_snapshot")
+_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+_NO_CONTEXT = "SELECT RAISE(ABORT, 'review write outside an import (use db.review_import)') " \
+              "WHERE NOT EXISTS (SELECT 1 FROM review_write_context)"
+_CONTEXT_ID = "(SELECT import_id FROM review_write_context WHERE id = 1)"
+
+
+def _json_obj(alias: str, cols) -> str:
+    # canonical JSON: keys in sorted order (cols are listed sorted), no spaces -- same as
+    # json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "json_object(" + ", ".join(f"'{c}', {alias}.{c}" for c in sorted(cols)) + ")"
+
+
+def _review_triggers(table: str) -> list[str]:
+    keys, cols = REVIEW_TABLES[table]
+    subj = lambda a: _json_obj(a, keys)  # noqa: E731
+    match = " AND ".join(f"t.{k} = NEW.{k}" for k in keys)
+    audit = ("INSERT INTO review_audit (import_id, review_table, subject_json, action, old_json, new_json, "
+             "review_author, recorded_at)")
+    pending = f"review_audit_pending WHERE review_table = '{table}' AND subject_json = {subj('NEW')}"
+    return [
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_bi BEFORE INSERT ON {table} BEGIN
+              {_NO_CONTEXT};
+              INSERT INTO review_audit_pending (review_table, subject_json, old_json, review_author)
+                SELECT '{table}', {subj('t')}, {_json_obj('t', cols)}, t.reviewer FROM {table} t WHERE {match};
+            END""",
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_ai AFTER INSERT ON {table} BEGIN
+              {audit} VALUES ({_CONTEXT_ID}, '{table}', {subj('NEW')},
+                CASE WHEN EXISTS (SELECT 1 FROM {pending}) THEN 'replace' ELSE 'insert' END,
+                (SELECT old_json FROM {pending}), {_json_obj('NEW', cols)}, NEW.reviewer, {_NOW_SQL});
+              DELETE FROM {pending};
+            END""",
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_bu BEFORE UPDATE ON {table} BEGIN {_NO_CONTEXT}; END""",
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_au AFTER UPDATE ON {table} BEGIN
+              DELETE FROM {pending};
+              {audit} VALUES ({_CONTEXT_ID}, '{table}', {subj('NEW')}, 'update',
+                {_json_obj('OLD', cols)}, {_json_obj('NEW', cols)}, NEW.reviewer, {_NOW_SQL});
+            END""",
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_bd BEFORE DELETE ON {table} BEGIN {_NO_CONTEXT}; END""",
+        # review_author on a delete is the author of the REMOVED review, not whoever deleted it
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_audit_ad AFTER DELETE ON {table} BEGIN
+              {audit} VALUES ({_CONTEXT_ID}, '{table}', {subj('OLD')}, 'delete',
+                {_json_obj('OLD', cols)}, NULL, OLD.reviewer, {_NOW_SQL});
+            END""",
+    ]
+
+
+def _append_only(table: str, pk: str) -> list[str]:
+    return [
+        f"CREATE TRIGGER IF NOT EXISTS {table}_no_update BEFORE UPDATE ON {table} "
+        f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END",
+        f"CREATE TRIGGER IF NOT EXISTS {table}_no_delete BEFORE DELETE ON {table} "
+        f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END",
+        # INSERT OR REPLACE / REPLACE INTO onto an existing row would delete it without a
+        # delete trigger (recursive_triggers is off by default): refuse it here
+        f"CREATE TRIGGER IF NOT EXISTS {table}_no_replace BEFORE INSERT ON {table} "
+        f"WHEN EXISTS (SELECT 1 FROM {table} WHERE {pk} = NEW.{pk}) "
+        f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END",
+    ]
+
+
+_SCHEMA_V8_STATEMENTS = [
+    f"""
+    CREATE TABLE IF NOT EXISTS review_imports (
+        import_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT NOT NULL CHECK (kind IN {REVIEW_IMPORT_KINDS}),
+        source_file    TEXT,
+        source_sha256  TEXT,
+        derived_file   TEXT,
+        derived_sha256 TEXT,
+        acting_user    TEXT,  -- self-reported (--actor or the OS user); not authenticated
+        started_at     TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS review_write_context (
+        id        INTEGER PRIMARY KEY CHECK (id = 1),
+        import_id INTEGER NOT NULL REFERENCES review_imports(import_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS review_audit_pending (
+        review_table  TEXT NOT NULL,
+        subject_json  TEXT NOT NULL,
+        old_json      TEXT NOT NULL,
+        review_author TEXT
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS review_audit (
+        audit_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_id     INTEGER NOT NULL REFERENCES review_imports(import_id),
+        review_table  TEXT NOT NULL CHECK (review_table IN {tuple(REVIEW_TABLES)}),
+        subject_json  TEXT NOT NULL,
+        action        TEXT NOT NULL CHECK (action IN {REVIEW_AUDIT_ACTIONS}),
+        old_json      TEXT,
+        new_json      TEXT,
+        review_author TEXT,  -- the reviewer named in the review row (on delete: the removed row's)
+        recorded_at   TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_review_audit_subject ON review_audit(review_table, subject_json)",
+    *_append_only("review_audit", "audit_id"),
+    *_append_only("review_imports", "import_id"),
+    # audit rows only ever come from an import, and carry that import's id
+    f"""CREATE TRIGGER IF NOT EXISTS review_audit_context BEFORE INSERT ON review_audit
+        WHEN NEW.import_id IS NOT {_CONTEXT_ID}
+        BEGIN SELECT RAISE(ABORT, 'review_audit rows must belong to the current import'); END""",
+    *[t for table in REVIEW_TABLES for t in _review_triggers(table)],
+]
+
+
+def review_subject(table: str, **key) -> str:
+    """The canonical subject_json for one review row (same bytes the triggers write)."""
+    keys, _ = REVIEW_TABLES[table]
+    if set(key) != set(keys):
+        raise ValueError(f"{table} is keyed by {list(keys)}, got {sorted(key)}")
+    return json.dumps(key, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def file_sha256(path: Path | str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def default_actor() -> str:
+    import getpass
+    try:
+        return getpass.getuser()
+    except (KeyError, OSError):
+        return "unknown"
+
+
+@contextmanager
+def review_import(conn, kind: str, source_file: Path | str | None, *, derived_file: Path | str | None = None,
+                  actor: str | None = None):
+    """One transaction for an import's review writes and its provenance: the
+    review_imports row, the write context, the caller's writes, then the
+    context cleared -- committed together or rolled back together."""
+    if conn.in_transaction:
+        raise RuntimeError("review_import must start its own transaction (commit pending writes first)")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        import_id = conn.execute(
+            "INSERT INTO review_imports (kind, source_file, source_sha256, derived_file, derived_sha256, acting_user, "
+            "started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, None if source_file is None else str(source_file),
+             None if source_file is None else file_sha256(source_file),
+             None if derived_file is None else str(derived_file),
+             None if derived_file is None else file_sha256(derived_file),
+             actor or default_actor(), now_iso())).lastrowid
+        conn.execute("INSERT INTO review_write_context (id, import_id) VALUES (1, ?)", (import_id,))
+        yield import_id
+        if conn.execute("SELECT COUNT(*) FROM review_audit_pending").fetchone()[0]:
+            raise RuntimeError("review_audit_pending not empty at the end of an import")
+        conn.execute("DELETE FROM review_write_context")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _baseline_review_history(conn) -> None:
+    """v8: one baseline_snapshot per existing review. Earlier history and the
+    original files were never recorded, so provenance stays NULL."""
+    if not any(conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone() for t in REVIEW_TABLES):
+        return
+    import_id = conn.execute("INSERT INTO review_imports (kind, started_at) VALUES ('migration_baseline', ?)",
+                             (now_iso(),)).lastrowid
+    conn.execute("INSERT INTO review_write_context (id, import_id) VALUES (1, ?)", (import_id,))
+    for table, (keys, cols) in REVIEW_TABLES.items():
+        conn.execute(
+            f"INSERT INTO review_audit (import_id, review_table, subject_json, action, old_json, new_json, "
+            f"review_author, recorded_at) SELECT ?, '{table}', {_json_obj('t', keys)}, 'baseline_snapshot', NULL, "
+            f"{_json_obj('t', cols)}, t.reviewer, ? FROM {table} t", (import_id, now_iso()))
+    conn.execute("DELETE FROM review_write_context")
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1009,6 +1220,10 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 7:
             for statement in _SCHEMA_V7_STATEMENTS:
                 conn.execute(statement)
+        if current_version < 8:
+            for statement in _SCHEMA_V8_STATEMENTS:
+                conn.execute(statement)
+            _baseline_review_history(conn)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

@@ -687,7 +687,7 @@ def test_unchanged_reingest_keeps_review_valid(env):
 def test_review_without_fingerprint_is_stale(env):
     assert ingest(env) == 0 and link(env) == 0
     approve(env, "vb:M2:R6")
-    with db_module.db(env["db"]) as conn:
+    with db_module.db(env["db"]) as conn, db_module.review_import(conn, "outcomes", None, actor="test-fixture"):
         conn.execute("UPDATE decision_outcome_review SET reviewed_fingerprint = NULL")
     assert statuses(env)["vb:M2:R6"] == "outcome_review_stale"
 
@@ -778,8 +778,9 @@ def test_migrate_v3_to_v4_backfills_fingerprints_and_stales_old_reviews(env):
     assert expected["vb:M1:R4"]  # quarantined decision has one too
     # simulate a v3 database: no fingerprints anywhere
     with db_module.db(env["db"]) as conn:
-        conn.execute("UPDATE land_use_decisions SET facts_fingerprint = NULL")
-        conn.execute("UPDATE decision_outcome_review SET reviewed_fingerprint = NULL")
+        with db_module.review_import(conn, "outcomes", None, actor="test-fixture"):
+            conn.execute("UPDATE land_use_decisions SET facts_fingerprint = NULL")
+            conn.execute("UPDATE decision_outcome_review SET reviewed_fingerprint = NULL")
         conn.execute("PRAGMA user_version=3")
     assert review_outcomes(env, [{"decision_key": "vb:M1:R2", "verified_outcome": "approved"}]) == 1  # NULL fp refused
     db_module.init_db(env["db"])

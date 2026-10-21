@@ -109,8 +109,15 @@ def main(argv=None) -> int:
     g.add_argument("--outcomes", type=Path)
     g.add_argument("--links", type=Path)
     p.add_argument("--config", type=Path, default=BASE / "config" / "land_use.toml")
+    p.add_argument("--actor", help="who is running this import (self-reported; default: the OS user)")
+    p.add_argument("--provenance-file", type=Path,
+                   help="the human-reviewed file these rows came from, when the CSV given is derived from it "
+                        "(accuracy_tally.py --apply-links passes the checked sample sheet)")
     args = p.parse_args(argv)
     ts = db_module.now_iso()
+    given = args.outcomes or args.links
+    source, derived = (args.provenance_file, given) if args.provenance_file else (given, None)
+    kind = "outcomes" if args.outcomes else ("accuracy_apply" if args.provenance_file else "links")
     cfg = None
     if args.links:
         try:
@@ -126,39 +133,44 @@ def main(argv=None) -> int:
         if errors:
             print("[FATAL] nothing written:\n  " + "\n  ".join(errors), file=sys.stderr)
             return 1
-        if args.outcomes:
-            for r in rows:
-                conn.execute(
-                    """INSERT INTO decision_outcome_review (decision_key, verified_outcome, evidence, reviewer,
-                           conflict_resolution, resolved_title, reviewed_at, reviewed_fingerprint)
-                       VALUES (?, ?, ?, ?, ?, ?, ?,
-                               (SELECT facts_fingerprint FROM land_use_decisions WHERE decision_key = ?))
-                       ON CONFLICT(decision_key) DO UPDATE SET verified_outcome = excluded.verified_outcome,
-                           reviewed_fingerprint = excluded.reviewed_fingerprint,
-                           evidence = excluded.evidence, reviewer = excluded.reviewer,
-                           conflict_resolution = excluded.conflict_resolution,
-                           resolved_title = excluded.resolved_title, reviewed_at = excluded.reviewed_at""",
-                    (r["decision_key"], r["verified_outcome"], r["evidence"], r["reviewer"],
-                     r.get("conflict_resolution") or None, r.get("resolved_title") or None, ts, r["decision_key"]))
-                if r.get("resolved_title"):
-                    land_use.sync_addresses(conn, r["decision_key"], parse_title_addresses(r["resolved_title"]), "review")
-            print(f"{len(rows)} outcome review(s) imported")
-        else:
-            conn.executemany(
-                """INSERT INTO decision_link_review (decision_key, permit_id, verdict, note, reviewer, reviewed_at)
-                   VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_key, permit_id) DO UPDATE SET
-                       verdict = excluded.verdict, note = excluded.note, reviewer = excluded.reviewer,
-                       reviewed_at = excluded.reviewed_at""",
-                [(r["decision_key"], int(r["permit_id"]), r["verdict"], r.get("note") or None, r["reviewer"], ts)
-                 for r in rows])
-            print(f"{len(rows)} link verdict(s) imported")
-            if conn.execute("SELECT 1 FROM permit_coverage").fetchone():
-                land_use_link.rebuild_links(conn, cfg, ts)
-                print("links rebuilt with the new verdicts")
-            else:
-                print("verdicts stored; they apply when scripts/link_decisions_permits.py runs")
+        with db_module.review_import(conn, kind, source, derived_file=derived, actor=args.actor):
+            _write(conn, args, rows, cfg, ts)
         print(f"status: {land_use_link.status_counts(conn)}")
     return 0
+
+
+def _write(conn, args, rows, cfg, ts) -> None:
+    if args.outcomes:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO decision_outcome_review (decision_key, verified_outcome, evidence, reviewer,
+                       conflict_resolution, resolved_title, reviewed_at, reviewed_fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?,
+                           (SELECT facts_fingerprint FROM land_use_decisions WHERE decision_key = ?))
+                   ON CONFLICT(decision_key) DO UPDATE SET verified_outcome = excluded.verified_outcome,
+                       reviewed_fingerprint = excluded.reviewed_fingerprint,
+                       evidence = excluded.evidence, reviewer = excluded.reviewer,
+                       conflict_resolution = excluded.conflict_resolution,
+                       resolved_title = excluded.resolved_title, reviewed_at = excluded.reviewed_at""",
+                (r["decision_key"], r["verified_outcome"], r["evidence"], r["reviewer"],
+                 r.get("conflict_resolution") or None, r.get("resolved_title") or None, ts, r["decision_key"]))
+            if r.get("resolved_title"):
+                land_use.sync_addresses(conn, r["decision_key"], parse_title_addresses(r["resolved_title"]), "review")
+        print(f"{len(rows)} outcome review(s) imported")
+    else:
+        conn.executemany(
+            """INSERT INTO decision_link_review (decision_key, permit_id, verdict, note, reviewer, reviewed_at)
+               VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_key, permit_id) DO UPDATE SET
+                   verdict = excluded.verdict, note = excluded.note, reviewer = excluded.reviewer,
+                   reviewed_at = excluded.reviewed_at""",
+            [(r["decision_key"], int(r["permit_id"]), r["verdict"], r.get("note") or None, r["reviewer"], ts)
+             for r in rows])
+        print(f"{len(rows)} link verdict(s) imported")
+        if conn.execute("SELECT 1 FROM permit_coverage").fetchone():
+            land_use_link.rebuild_links(conn, cfg, ts)
+            print("links rebuilt with the new verdicts")
+        else:
+            print("verdicts stored; they apply when scripts/link_decisions_permits.py runs")
 
 
 if __name__ == "__main__":

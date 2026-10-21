@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const QUEUE_KEY = "permitiq.linkReviewQueue.v1";
 const key = new URLSearchParams(location.search).get("key");
 
-// esc, escLinkify and buildReviewCsv come from /static/lead_util.js.
+// esc, escLinkify, buildReviewCsv and buildHistoryHtml come from /static/lead_util.js.
 
 function pct(v) { return v == null ? "–" : `${(100 * v).toFixed(1)}%`; }
 
@@ -141,6 +141,7 @@ function render(d) {
         <div class="row-actions">
           <button class="btn small danger" data-verdict="rejected" data-permit="${esc(l.permit_id)}">Mark bad link</button>
           <button class="btn small" data-verdict="confirmed" data-permit="${esc(l.permit_id)}">Confirm</button>
+          <button class="btn small" data-history="${esc(l.permit_id)}">Review history</button>
         </div></td>
     </tr>`).join("");
   const firstParcel = d.parcel_rows.find((p) => p.display_gpin);
@@ -175,6 +176,7 @@ function render(d) {
       <h3>Later permits</h3>
       ${d.links.length ? `<table class="grid"><thead><tr><th>Permit</th><th>Applied</th><th>New constr.</th><th>Match reason</th><th>Flood</th><th>Review</th></tr></thead><tbody>${links}</tbody></table>` : '<p class="muted">No candidate permits in the observed permit data.</p>'}
       <p class="muted small">Every automatic match is a candidate: a property match can belong to a different project on the same parcel.</p>
+      <div id="history" hidden></div>
     </section>
 
     <section class="card">
@@ -191,8 +193,25 @@ function render(d) {
 
   document.querySelectorAll("[data-verdict]").forEach((b) =>
     b.addEventListener("click", () => enqueue(Number(b.dataset.permit), b.dataset.verdict)));
+  document.querySelectorAll("[data-history]").forEach((b) =>
+    b.addEventListener("click", () => showHistory(Number(b.dataset.history))));
   renderQueueBanner();
   if (firstParcel && window.L) drawParcel(firstParcel.display_gpin);
+}
+
+async function showHistory(permitId) {
+  const box = $("history");
+  box.hidden = false;
+  const link = current.links.find((l) => l.permit_id === permitId);
+  try {
+    const qs = new URLSearchParams({ decision_key: key, permit_id: String(permitId) });
+    const res = await fetch(`/api/audit/decision_link_review?${qs}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+    box.innerHTML = `<h3>Review history — permit ${esc(link ? link.source_permit_id : permitId)}</h3>${buildHistoryHtml(body)}`;
+  } catch (err) {
+    box.innerHTML = `<p class="warn">Could not load review history: ${esc(err.message)}</p>`;
+  }
 }
 
 async function drawParcel(gpin) {

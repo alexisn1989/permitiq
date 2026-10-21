@@ -358,6 +358,14 @@ python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re
 - **Stages.** `--stage provisional` (the default) marks reports and lead files provisional and draws no accuracy sample. `--stage final` refuses without outcome reviews, or with stale ones, and draws the sample from the reviewed snapshot.
 - **Report-only phase.** `--phase report` regenerates reports only, keeping the sample's recorded N beside today's counts.
 - **Hand-off.** `handoff_extract.py` builds a hand-off folder: the run, a database inventory with its SHA-256, and CSV extracts without `raw_json`. The database file itself is not included.
+- **Review history (schema v8).** Database triggers record every change to a human review in `review_audit`: outcomes, link verdicts, parcel verdicts and decision-set verdicts.
+  - **Each change is tied to its import** in `review_imports`: the CSV file and its SHA-256, and the acting user (`--actor`, or the OS user).
+  - **Accuracy imports** (`accuracy_tally.py --apply-links`) record the checked sample sheet as the source. The generated verdict CSV is recorded as a derived file.
+  - **Writes outside an import are refused.** Review writes are allowed only inside `db.review_import()`, one transaction with the provenance. `review_audit` and `review_imports` refuse `UPDATE`, `DELETE` and `INSERT OR REPLACE` onto existing rows.
+  - **Existing reviews** get one `baseline_snapshot` at migration, with no provenance: earlier changes were never recorded.
+  - **Each history entry** names the review's author separately from the person who ran the import.
+  - **Limits:** this is not authenticated and not tamper-proof. The acting user is self-reported, and anyone who can write the database file can alter it.
+  - **Where to see it:** `GET /api/audit/{review_table}` with exactly that table's key, and "Review history" on the lead screen.
 
 ---
 
@@ -385,6 +393,7 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/parcels/{gpin}.geojson` | One parcel outline from the active parcel load (ETag / 304; 404 if absent) |
 | `GET /api/quality` | Coverage, unresolved cases, refresh age; accuracy only while its data snapshot is current |
 | `GET /api/data-as-of` | Recorded source dates and the permit observation window |
+| `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 
@@ -396,7 +405,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**395 tests.** No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**417 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

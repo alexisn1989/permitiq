@@ -412,6 +412,11 @@ def test_only_explicit_same_project_rows_become_link_reviews(run_env):
     expected = {(r["decision_key"], int(r["permit_id"])) for r in rows
                 if r["stratum"] == "link_same_parcel" and r["same_project"] == "yes"}
     assert reviewed == expected  # no stale, cant_tell, lead or flood row became a link review
+    with db_module.db_readonly(run_env["db"]) as conn:  # provenance: the checked sheet, not the derived CSV
+        imp = conn.execute("SELECT * FROM review_imports WHERE kind = 'accuracy_apply'").fetchone()
+    assert imp["source_file"] == str(sheet) and imp["source_sha256"] == db_module.file_sha256(sheet)
+    derived = sheet.with_name("accuracy_link_verdicts.csv")
+    assert imp["derived_file"] == str(derived) and imp["derived_sha256"] == db_module.file_sha256(derived)
 
 
 def test_whole_sample_stale_after_new_parcel_load(run_env):

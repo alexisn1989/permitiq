@@ -51,6 +51,7 @@ def current_match(conn, kind: str, key: str):
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Import parcel dispute verdicts")
     p.add_argument("file", type=Path)
+    p.add_argument("--actor", help="who is running this import (self-reported; default: the OS user)")
     args = p.parse_args(argv)
     with args.file.open(newline="", encoding="utf-8") as fh:
         rows = [{k: (v or "").strip() for k, v in r.items()} for r in csv.DictReader(fh)]
@@ -96,19 +97,24 @@ def main(argv=None) -> int:
         if errors:
             print("[FATAL] nothing written:\n  " + "\n  ".join(errors), file=sys.stderr)
             return 1
-        conn.executemany(
-            """INSERT INTO parcel_match_review (subject_kind, subject_key, verdict, reviewed_fp, reviewer, note,
-                   reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(subject_kind, subject_key) DO UPDATE SET verdict = excluded.verdict,
-                   reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
-                   reviewed_at = excluded.reviewed_at""", ok)
-        conn.executemany(
-            """INSERT INTO decision_parcel_set_review (decision_key, verdict, reviewed_fp, reviewer, note, reviewed_at)
-               VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_key) DO UPDATE SET verdict = excluded.verdict,
-                   reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
-                   reviewed_at = excluded.reviewed_at""", sets)
+        with db_module.review_import(conn, "parcel", args.file, actor=args.actor):
+            _write(conn, ok, sets)
     print(f"{len(ok) + len(sets)} parcel verdict(s) imported; rerun scripts/link_decisions_permits.py to apply them to links")
     return 0
+
+
+def _write(conn, ok, sets) -> None:
+    conn.executemany(
+        """INSERT INTO parcel_match_review (subject_kind, subject_key, verdict, reviewed_fp, reviewer, note,
+               reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(subject_kind, subject_key) DO UPDATE SET verdict = excluded.verdict,
+               reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
+               reviewed_at = excluded.reviewed_at""", ok)
+    conn.executemany(
+        """INSERT INTO decision_parcel_set_review (decision_key, verdict, reviewed_fp, reviewer, note, reviewed_at)
+           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_key) DO UPDATE SET verdict = excluded.verdict,
+               reviewed_fp = excluded.reviewed_fp, reviewer = excluded.reviewer, note = excluded.note,
+               reviewed_at = excluded.reviewed_at""", sets)
 
 
 if __name__ == "__main__":

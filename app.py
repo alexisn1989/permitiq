@@ -799,6 +799,57 @@ def quality_route():
         return quality.quality(conn)
 
 
+AUDIT_NOTICE = ("Review history is recorded by database triggers per import. It is not authenticated and not "
+                "tamper-proof: acting_user is self-reported, and anyone with write access to the database file can "
+                "alter it.")
+AUDIT_KEY_TYPES = {"permit_id": int}
+
+
+@app.get("/api/audit/{review_table}")
+def audit_route(review_table: str, request: Request):
+    """Change history of one human review. Query parameters are exactly the
+    review table's own key, e.g. /api/audit/decision_link_review?decision_key=..&permit_id=.."""
+    if review_table not in db_module.REVIEW_TABLES:
+        raise HTTPException(400, f"unknown review table {review_table!r}; one of {list(db_module.REVIEW_TABLES)}")
+    keys, _ = db_module.REVIEW_TABLES[review_table]
+    given = dict(request.query_params)
+    if set(given) != set(keys):
+        raise HTTPException(400, f"{review_table} is keyed by exactly {list(keys)}; got {sorted(given)}")
+    subject = {}
+    for k, v in given.items():
+        try:
+            subject[k] = AUDIT_KEY_TYPES.get(k, str)(v)
+        except ValueError:
+            raise HTTPException(400, f"{k} must be an integer") from None
+    if review_table == "parcel_match_review" and subject["subject_kind"] not in ("permit", "decision"):
+        raise HTTPException(400, "subject_kind must be permit or decision")
+    with _ro() as conn:
+        rows = conn.execute(
+            "SELECT a.audit_id, a.action, a.recorded_at, a.review_author, a.old_json, a.new_json, i.import_id, i.kind, "
+            "i.source_file, i.source_sha256, i.derived_file, i.derived_sha256, i.acting_user, i.started_at "
+            "FROM review_audit a JOIN review_imports i ON i.import_id = a.import_id "
+            "WHERE a.review_table = ? AND a.subject_json = ? ORDER BY a.audit_id",
+            (review_table, db_module.review_subject(review_table, **subject))).fetchall()
+        label = None
+        if review_table == "decision_link_review":
+            r = conn.execute("SELECT source_permit_id FROM permits WHERE id = ?", (subject["permit_id"],)).fetchone()
+            label = {"source_permit_id": r[0] if r else None}  # readable label only, never the key
+    history = [{"audit_id": r["audit_id"], "action": r["action"], "recorded_at": r["recorded_at"],
+                "review_author": r["review_author"],
+                "old": json.loads(r["old_json"]) if r["old_json"] else None,
+                "new": json.loads(r["new_json"]) if r["new_json"] else None,
+                "import": {"import_id": r["import_id"], "kind": r["kind"], "source_file": r["source_file"],
+                           "source_sha256": r["source_sha256"], "derived_file": r["derived_file"],
+                           "derived_sha256": r["derived_sha256"], "acting_user": r["acting_user"],
+                           "acting_user_verified": False, "started_at": r["started_at"]}} for r in rows]
+    baseline = next((h for h in history if h["action"] == "baseline_snapshot"), None)
+    return {"review_table": review_table, "subject": subject, "label": label, "history": history,
+            "baseline_note": None if baseline is None else
+            f"Captured when history tracking began ({baseline['recorded_at']}). Earlier changes and the "
+            "original file were not recorded.",
+            "notice": AUDIT_NOTICE}
+
+
 @app.get("/api/parcels/{gpin}.geojson")
 def parcel_outline(gpin: str, request: Request):
     """One parcel of the active parcel load as a GeoJSON Feature, for the map

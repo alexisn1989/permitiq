@@ -9,7 +9,8 @@ handoff/
   extract/*.csv          bounded verification extract, NO raw_json:
                          decisions, decision_addresses, links (effective),
                          linked_permits (+ parcel match), decision_parcels,
-                         source_dates, backfill_checks
+                         source_dates, backfill_checks, review_audit and
+                         review_imports (review history and its provenance)
 The full permits.db is never copied here. If it is needed, upload it
 privately and compare its SHA-256 with db_inventory.json.
 
@@ -54,6 +55,10 @@ EXTRACTS = {
     "backfill_checks": """SELECT backfill_run_id, where_clause, source_count, source_ids, db_ids, truly_missing,
         dup_permit_number, no_permit_number, extra_in_db, dup_objectids_db, null_date_source, topped_up,
         per_year_json, verified, checked_at FROM permit_backfill_checks ORDER BY check_id""",
+    "review_audit": """SELECT audit_id, import_id, review_table, subject_json, action, old_json, new_json,
+        review_author, recorded_at FROM review_audit ORDER BY audit_id""",
+    "review_imports": """SELECT import_id, kind, source_file, source_sha256, derived_file, derived_sha256,
+        acting_user, started_at FROM review_imports ORDER BY import_id""",
 }
 
 
