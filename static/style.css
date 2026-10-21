@@ -459,6 +459,7 @@ body.lead-page { display: block; height: auto; min-height: 100%; }
 .status-pill.s-confirmed_permit { border-color: var(--accent); color: var(--accent); }
 .queue-banner { display: flex; gap: 0.6rem; align-items: center; justify-content: center; flex-wrap: wrap;
   padding: 0.5rem 1rem; background: var(--panel-2); border-bottom: 1px solid var(--amber); font-size: 0.85rem; }
+.queue-banner[hidden] { display: none; }
 @media (max-width: 700px) {
   .lead dl div { grid-template-columns: 1fr; }
   .lead table.grid { display: block; overflow-x: auto; }
