@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No .env files or keys in tracked files
+        run: |
+          set -u
+          fail=0
+          if git ls-files | grep -E '(^|/)\.env($|\.)'; then
+            echo "::error::a .env file is tracked"; fail=1
+          fi
+          if git ls-files -z | xargs -0 grep -nIE 'AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----' --; then
+            echo "::error::an API key or private key is in a tracked file"; fail=1
+          fi
+          exit $fail
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Tests (fixtures only, no network)
+        run: python -m pytest -q
