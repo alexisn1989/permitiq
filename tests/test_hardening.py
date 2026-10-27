@@ -648,6 +648,9 @@ def _q(**over):
          "refresh_age": {s: {"as_of": "2026-10-01"} for s in quality.CHECKLIST_SOURCES},
          "unresolved": {"outcome_unverified": 0, "outcome_review_stale": 0, "quarantined": 0},
          "official_crosscheck": {"passed": True, "detail": "x"},
+         "planning_commission": {"coverage": {"verified": True, "months_without_agenda": [], "agenda_found": 2,
+                                              "months": 2, "minutes_found": 2, "from": "2026-08", "to": "2026-09"},
+                                 "items": 3, "items_with_warnings": 0},
          "accuracy": {"freshness": "fresh", "results": {
              "links_by_tier": {"gpin_exact": dict(tier), "address": {"population": 4, "adjudicated": 4}},
              "leads": {"population": 10, "adjudicated": 10, "cant_tell": 1},

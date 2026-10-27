@@ -8,8 +8,9 @@
 const $ = (id) => document.getElementById(id);
 const QUEUE_KEY = "permitiq.linkReviewQueue.v1";
 const key = new URLSearchParams(location.search).get("key");
+const pcKey = new URLSearchParams(location.search).get("pc");
 
-// esc, escLinkify, buildReviewCsv, buildHistoryHtml and buildLeadFactsHtml come from /static/lead_util.js.
+// esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml and buildPcItemHtml come from /static/lead_util.js.
 
 function pct(v) { return v == null ? "–" : `${(100 * v).toFixed(1)}%`; }
 
@@ -229,7 +230,19 @@ async function drawParcel(gpin) {
   } catch { /* the outline is optional */ }
 }
 
+async function bootPc() {
+  try {
+    const res = await fetch(`/api/land-use/pc-items/${encodeURIComponent(pcKey)}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+    $("lead").innerHTML = buildPcItemHtml(body);
+  } catch (err) {
+    $("lead").innerHTML = `<p class="warn">Could not load this hearing item: ${esc(err.message)}</p>`;
+  }
+}
+
 async function boot() {
+  if (pcKey) { bootPc(); return; }
   if (!key) { $("lead").innerHTML = '<p class="warn">No decision key in the address (?key=…).</p>'; return; }
   try {
     const res = await fetch(`/api/land-use/decisions/${encodeURIComponent(key)}`);

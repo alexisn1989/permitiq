@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1176,6 +1176,120 @@ def _baseline_review_history(conn) -> None:
     conn.execute("DELETE FROM review_write_context")
 
 
+# Schema v9 (Planning Commission hearings, Virginia Beach). Agendas and minutes
+# are PDFs; pc_documents records each one (URL, SHA-256, parser version,
+# parse status), pc_items one row per agenda item with its raw block, and
+# pc_recommendations one row per item number from the minutes. A PC
+# recommendation is advice to City Council: pc_item_status never yields an
+# approval, and nothing here touches Council decision status or links.
+PC_STATUSES = ("scheduled", "recommended_approval", "recommended_denial", "deferred", "withdrawn",
+               "recommendation_unmapped", "no_recommendation_found")
+_SCHEMA_V9_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS pc_documents (
+        doc_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind            TEXT NOT NULL CHECK (kind IN ('agenda', 'minutes')),
+        url             TEXT NOT NULL UNIQUE,
+        meeting_date    TEXT,
+        sha256          TEXT NOT NULL,
+        bytes           INTEGER NOT NULL,
+        fetched_at      TEXT NOT NULL,
+        parser_version  TEXT NOT NULL,
+        parse_status    TEXT NOT NULL CHECK (parse_status IN ('ok', 'partial', 'failed')),
+        n_items         INTEGER NOT NULL DEFAULT 0,
+        warnings_json   TEXT NOT NULL DEFAULT '[]',
+        notes_json      TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pc_items (
+        item_key              TEXT PRIMARY KEY,
+        doc_id                INTEGER NOT NULL REFERENCES pc_documents(doc_id),
+        meeting_date          TEXT NOT NULL,
+        item_label            TEXT NOT NULL,
+        item_numbers_json     TEXT NOT NULL,
+        section               TEXT,
+        applicants_json       TEXT NOT NULL,
+        owners_json           TEXT NOT NULL,
+        request               TEXT,
+        notes_json            TEXT NOT NULL DEFAULT '[]',
+        addresses             TEXT,
+        gpins_json            TEXT NOT NULL,
+        gpin10s_json          TEXT NOT NULL,
+        council_district      INTEGER,
+        council_district_text TEXT,
+        accela_json           TEXT NOT NULL,
+        staff_planner         TEXT,
+        description           TEXT,
+        city_initiated        INTEGER NOT NULL DEFAULT 0,
+        agenda_result_raw     TEXT,
+        agenda_result         TEXT,
+        agenda_council_on     TEXT,
+        raw_block             TEXT NOT NULL,
+        warnings_json         TEXT NOT NULL DEFAULT '[]',
+        facts_fp              TEXT NOT NULL,
+        updated_at            TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pc_items_meeting ON pc_items(meeting_date)",
+    """
+    CREATE TABLE IF NOT EXISTS pc_recommendations (
+        meeting_date        TEXT NOT NULL,
+        item_number         INTEGER NOT NULL,
+        minutes_doc_id      INTEGER NOT NULL REFERENCES pc_documents(doc_id),
+        heading             TEXT,
+        recommendation_raw  TEXT,
+        recommendation      TEXT NOT NULL,
+        aye INTEGER, nay INTEGER, abstain INTEGER, absent INTEGER,
+        raw_block           TEXT,
+        PRIMARY KEY (meeting_date, item_number)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pc_council_candidates (
+        item_key            TEXT NOT NULL REFERENCES pc_items(item_key) ON DELETE CASCADE,
+        decision_key        TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        matched_on          TEXT NOT NULL CHECK (matched_on IN ('gpin', 'address')),
+        council_after_days  INTEGER NOT NULL,
+        linked_at           TEXT NOT NULL,
+        PRIMARY KEY (item_key, decision_key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pc_index_checks (
+        check_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        index_url    TEXT NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('ok', 'blocked', 'error')),
+        links_found  INTEGER NOT NULL DEFAULT 0,
+        detail       TEXT,
+        checked_at   TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS pc_item_status AS
+    SELECT i.item_key, i.meeting_date, r.recommendation AS minutes_recommendation, r.recommendation_raw,
+           r.aye, r.nay, r.abstain, r.absent,
+           (SELECT COUNT(*) FROM pc_council_candidates c WHERE c.item_key = i.item_key) AS n_council_candidates,
+           CASE
+             WHEN r.recommendation = 'unmapped' THEN 'recommendation_unmapped'
+             WHEN r.recommendation IS NOT NULL THEN r.recommendation
+             WHEN i.agenda_result = 'unmapped' THEN 'recommendation_unmapped'
+             WHEN i.agenda_result IS NOT NULL THEN i.agenda_result
+             WHEN EXISTS (SELECT 1 FROM pc_documents d WHERE d.kind = 'minutes'
+                          AND d.meeting_date = i.meeting_date AND d.parse_status != 'failed')
+               THEN 'no_recommendation_found'
+             ELSE 'scheduled'
+           END AS status,
+           CASE WHEN r.recommendation IS NOT NULL THEN 'minutes'
+                WHEN i.agenda_result IS NOT NULL THEN 'annotated_agenda' END AS status_source
+    FROM pc_items i
+    LEFT JOIN pc_recommendations r ON r.rowid = (
+        SELECT p.rowid FROM pc_recommendations p, json_each(i.item_numbers_json) j
+        WHERE p.meeting_date = i.meeting_date AND p.item_number = j.value ORDER BY p.item_number LIMIT 1)
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1224,6 +1338,9 @@ def init_db(db_path: Path | str | None = None) -> None:
             for statement in _SCHEMA_V8_STATEMENTS:
                 conn.execute(statement)
             _baseline_review_history(conn)
+        if current_version < 9:
+            for statement in _SCHEMA_V9_STATEMENTS:
+                conn.execute(statement)
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

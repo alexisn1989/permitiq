@@ -55,6 +55,14 @@ EXTRACTS = {
     "backfill_checks": """SELECT backfill_run_id, where_clause, source_count, source_ids, db_ids, truly_missing,
         dup_permit_number, no_permit_number, extra_in_db, dup_objectids_db, null_date_source, topped_up,
         per_year_json, verified, checked_at FROM permit_backfill_checks ORDER BY check_id""",
+    # no raw blocks (they carry names of private individuals); the PDFs are public at their URLs
+    "pc_documents": """SELECT doc_id, kind, url, meeting_date, sha256, bytes, fetched_at, parser_version, parse_status,
+        n_items, warnings_json FROM pc_documents ORDER BY meeting_date, kind""",
+    "pc_items": """SELECT i.item_key, i.meeting_date, i.item_label, i.request, i.addresses, i.gpins_json,
+        i.council_district_text, i.accela_json, i.staff_planner, i.city_initiated, s.status, s.status_source,
+        s.n_council_candidates, i.warnings_json FROM pc_items i JOIN pc_item_status s ON s.item_key = i.item_key
+        ORDER BY i.meeting_date, i.item_key""",
+    "pc_council_candidates": "SELECT * FROM pc_council_candidates ORDER BY item_key, decision_key",
     "review_audit": """SELECT audit_id, import_id, review_table, subject_json, action, old_json, new_json,
         review_author, recorded_at FROM review_audit ORDER BY audit_id""",
     "review_imports": """SELECT import_id, kind, source_file, source_sha256, derived_file, derived_sha256,

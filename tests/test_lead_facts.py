@@ -42,6 +42,9 @@ def test_request_and_scale_keep_their_source_text():
     assert got == {("units", 240.0), ("square_feet", 12500.0), ("acres", 31.5)}
     assert all(s["text"] in t for s in L.scale(t))
     assert L.scale("Change of Zoning from R-7.5 to B-2 ($10,000 fee) DISTRICT 4") == []
+    assert [(s["kind"], s["value"]) for s in L.scale("to develop a 209-unit multi-family community")] == [("units", 209.0)]
+    assert [(s["kind"], s["value"]) for s in L.scale("a 209- unit building")] == [("units", 209.0)]  # PDF line wrap
+    assert L.scale("a 2-bedroom unit") == [] and L.scale("303 Atlantic Avenue, Unit 403") == []
 
 
 def test_detail_api_lead_facts_and_timing(env):

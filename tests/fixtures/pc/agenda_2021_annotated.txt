@@ -1,0 +1,38 @@
+SYNTHETIC FIXTURE: layout of a 2021 annotated Virginia Beach Planning Commission agenda; names are invented.
+A Public Hearing of the Virginia Beach Planning Commission will be held on Wednesday, April 14, 2021
+12:00 P.M. – PUBLIC HEARING
+1.
+City of Virginia Beach APPROVAL (COUNCIL on April 21) – An Ordinance to Amend Section 232
+of the City Zoning Ordinance
+2. APPROVAL (COUNCIL on June 1)
+Example Family Trust (Applicant & Property
+Owner)
+Street Closure
+Address: portion of an alley adjacent to 737 Vanderbilt Avenue
+GPIN(s): Adjacent to 2426385081
+Council District: Beach
+Accela Record: 2021-PCCC-00023
+Staff Planner: Lee Planner
+Request to close the remaining half of the alley.
+*   Deferral
+** Withdrawal
+3. WITHDRAWAL
+Priority Example Motors, Inc. (Applicant)
+Example Properties Bonney Road, LLC (Property
+Owner)
+Conditional Use Permit (Bulk Storage Yard)
+Address: 3962 Bonney Road
+GPIN(s): 1487133867
+Council District: Lynnhaven
+Accela Record: 2021-PCCC-00026
+Staff Planner: Lee Planner
+Request to operate an outdoor storage yard.
+4. & 5. DENIAL
+Example Coastal Rentals, LLC (Applicant & Property Owner)
+Conditional Use Permit (Short Term Rental)
+Address: 8809 Atlantic Avenue Units A&B
+GPIN(s): 2510512836
+Council District: Beach
+Accela Record: 2020-PCCC-00307, 2020-PCCC-00308
+Staff Planner: Lee Planner
+Request for two short term rentals.

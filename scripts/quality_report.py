@@ -60,6 +60,19 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
         else:
             lines += ["Every step finished ok."]
         lines += [""]
+    pc = q.get("planning_commission")
+    if pc:
+        c = pc["coverage"]
+        lines += ["## Planning Commission hearings", "",
+                  f"Agendas found for {c['agenda_found']} of {c['months']} expected monthly hearings "
+                  f"({c['from']}–{c['to']}); minutes for {c['minutes_found']}. "
+                  + ("Coverage verified against the city's agenda index."
+                     if c["verified"] else f"**Coverage unverified** — {c['note']}."), "",
+                  f"- Documents: {pc['documents_by_status']}",
+                  f"- Items: {pc['items']} ({pc['items_with_warnings']} parsed with warnings); by status: "
+                  f"{pc['items_by_status']}",
+                  f"- Items with a possible Council decision: {pc['items_with_council_candidate']}",
+                  "- A Planning Commission recommendation is advice to City Council, not an approval.", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

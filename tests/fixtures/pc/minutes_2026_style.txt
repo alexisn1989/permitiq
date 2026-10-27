@@ -1,0 +1,18 @@
+SYNTHETIC FIXTURE: layout of 2026 Virginia Beach Planning Commission minutes.
+Virginia Beach Planning Commission August 12, 2026
+City Council Chambers
+Vote Tally
+Commission Member AYE 11 NAY 0 ABS 0 ABSENT 0
+Public Meeting Item #1 City of Virginia Beach
+Recommendation: RECOMMENDED FOR APPROVAL
+Discussion
+Vote Tally
+Commission Member AYE 11 NAY 0 ABS 0 ABSENT 0
+Public Meeting Item #2 Kroll Example Residential, Inc.
+Recommendation: RECOMMENDED FOR DENIAL
+Vote Tally
+Commission Member AYE 3 NAY 7 ABS 0 ABSENT 1
+Public Meeting Items #3 – 4 Various
+Recommendation: SENT BACK TO STAFF FOR STUDY
+Vote Tally
+Commission Member AYE 10 NAY 0 ABS 1 ABSENT 0

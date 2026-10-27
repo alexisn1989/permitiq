@@ -253,10 +253,27 @@ def source_row_counts(conn) -> dict:
     }
 
 
+def pc_quality(conn) -> dict | None:
+    """Planning Commission documents: coverage by month and parse results; None if none ingested."""
+    if not conn.execute("SELECT 1 FROM pc_documents LIMIT 1").fetchone():
+        return None
+    from ingest import pc_hearings  # local import: keeps the quality module free of parsing code
+    one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+    return {
+        "coverage": pc_hearings.coverage(conn),
+        "documents_by_status": dict(conn.execute("SELECT kind || '/' || parse_status, COUNT(*) FROM pc_documents "
+                                                 "GROUP BY 1").fetchall()),
+        "items": one("SELECT COUNT(*) FROM pc_items"),
+        "items_with_warnings": one("SELECT COUNT(*) FROM pc_items WHERE warnings_json != '[]'"),
+        "items_by_status": dict(conn.execute("SELECT status, COUNT(*) FROM pc_item_status GROUP BY status").fetchall()),
+        "items_with_council_candidate": one("SELECT COUNT(*) FROM pc_item_status WHERE n_council_candidates > 0"),
+    }
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
-            "source_rows": source_row_counts(conn)}
+            "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -316,6 +333,20 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
         checked = f.get("sampled", 0) - f.get("unchecked", 0) - f.get("stale", 0)
         need = min(min_n, f["population"])
         add("Flood disagreements checked", checked >= need, f"{checked} of {need} needed (N={f['population']})")
+    pc = q.get("planning_commission")
+    if pc is None:
+        add("Planning Commission coverage verified", None, "no Planning Commission documents ingested")
+    else:
+        c = pc["coverage"]
+        gaps = c["months_without_agenda"]
+        detail = (f"agendas for {c['agenda_found']} of {c['months']} months ({c['from']}–{c['to']}), minutes for "
+                  f"{c['minutes_found']}; {pc['items_with_warnings']} of {pc['items']} items parsed with warnings")
+        if not c["verified"]:
+            add("Planning Commission coverage verified", None, detail + "; the city's agenda index was not read")
+        else:
+            add("Planning Commission coverage verified", not gaps,
+                detail + (f"; months without an agenda: {', '.join(gaps[:12])}{' …' if len(gaps) > 12 else ''}"
+                          if gaps else ""))
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

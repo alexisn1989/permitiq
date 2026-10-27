@@ -161,6 +161,9 @@ def main(argv=None) -> int:
     p.add_argument("--no-geocode", action="store_true", help="skip decision geocoding (recorded as skipped)")
     p.add_argument("--out-root", type=Path, default=BASE / "reports")
     p.add_argument("--synthetic", action="store_true", help="label everything as a fixture rehearsal")
+    p.add_argument("--pc", action="store_true",
+                   help="also index, ingest and link Planning Commission agendas and minutes (earliest leads)")
+    p.add_argument("--pc-urls", type=Path, help="hand-made list of PC PDF URLs, merged into the index")
     args = p.parse_args(argv)
     if args.parcels_file and args.parcels_count is None:
         p.error("--parcels-file requires --parcels-count")
@@ -224,6 +227,15 @@ def main(argv=None) -> int:
             r.step("parcel_flood", "tag_parcel_flood.py", [])
             r.step("tag_decision_points", "tag_flood_zones.py", ["--decisions"])
             r.step("link", "link_decisions_permits.py", [*lu, "--reports-dir", run_dir])
+            if args.pc:
+                # exit 3 = index unreachable / documents failed: recorded as a gap, never as success
+                r.step("pc_index", "pc_index.py", ["--out", run_dir / "pc_index.json",
+                                                   *(["--urls", args.pc_urls] if args.pc_urls else [])], gap_codes={3})
+                r.step("pc_ingest", "ingest_pc_documents.py",
+                       ["--index", run_dir / "pc_index.json", "--reports-dir", run_dir], gap_codes={3})
+                r.step("pc_link", "link_pc_council.py", [])
+            else:
+                r.skip("pc_hearings", "Planning Commission hearings not requested (--pc)")
 
             imported = 0
             rd = args.reviews_dir
@@ -253,6 +265,8 @@ def main(argv=None) -> int:
         r.step("land_use_report", "land_use_report.py", [*lu, "--out", run_dir, *stage_flag])
         r.step("parcel_report", "parcel_report.py", ["--out", run_dir, "--config", args.flood_config])
         r.step("unmatched_reasons", "unmatched_reasons.py", ["--out", run_dir])
+        if args.pc:
+            r.step("pc_report", "pc_report.py", ["--out", run_dir, *stage_flag])
         if args.phase == "report":
             r.skip("accuracy_sample", "report phase: the existing sample and its recorded population are kept")
         elif stage == "provisional":

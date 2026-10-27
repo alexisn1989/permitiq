@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import flood_stats, land_use, land_use_stats, lead_facts, quality
+from ingest import flood_stats, land_use, land_use_stats, lead_facts, pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -752,6 +752,83 @@ def land_use_decision_detail(decision_key: str):
             "parcel_rows": parcel_rows, "links": links, "conflicts": conflicts,
             "review": dict(review) if review else None, "coverage": cov, "data_as_of": as_of,
             "lead_facts": facts}
+
+
+PC_ITEM_SQL = """SELECT i.*, s.status, s.status_source, s.minutes_recommendation, s.recommendation_raw, s.aye, s.nay,
+                         s.abstain, s.absent, s.n_council_candidates
+                  FROM pc_items i JOIN pc_item_status s ON s.item_key = i.item_key"""
+PC_NOTICE = ("A Planning Commission recommendation is advice to City Council, not an approval. Applicant, request "
+             "and size are read from the agenda text and not verified; names of private individuals are not shown.")
+
+
+@app.get("/api/land-use/pc-items")
+def pc_items_route(
+    status: Optional[list[str]] = Query(None), district: Optional[int] = Query(None, ge=1, le=99),
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    include_city: bool = False, limit: int = Query(200, ge=1, le=2000),
+):
+    """Planning Commission agenda items (earliest signal of a land-use application)."""
+    _validate_date(date_from, "date_from")
+    _validate_date(date_to, "date_to")
+    statuses = parse_tokens(status, db_module.PC_STATUSES, "status")
+    where, args = [], []
+    if statuses:
+        where.append(f"s.status IN ({','.join('?' * len(statuses))})")
+        args += statuses
+    if district is not None:
+        where.append("i.council_district = ?")
+        args.append(district)
+    if date_from:
+        where.append("i.meeting_date >= ?")
+        args.append(date_from)
+    if date_to:
+        where.append("i.meeting_date <= ?")
+        args.append(date_to)
+    if not include_city:
+        where.append("i.city_initiated = 0")
+    sql = PC_ITEM_SQL + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY i.meeting_date DESC, i.item_key"
+    with _ro() as conn:
+        rows = [dict(r) for r in conn.execute(sql + " LIMIT ?", (*args, limit))]
+        items = []
+        for r in rows:
+            item = pc_hearings.public_item(r)
+            item.update({k: r[k] for k in ("status", "status_source", "n_council_candidates")})
+            parcels = [p for p in pc_hearings.item_parcels(conn, item["gpins"][:1]) if p.get("gpin")]
+            first = parcels[0] if parcels and not parcels[0]["ambiguous"] else None
+            item["lat"], item["lng"] = (first["lat"], first["lng"]) if first else (None, None)
+            items.append(item)
+        cov = pc_hearings.coverage(conn)
+    return {"items": items, "count": len(items), "coverage": cov, "notice": PC_NOTICE}
+
+
+@app.get("/api/land-use/pc-items/{item_key}")
+def pc_item_detail(item_key: str):
+    with _ro() as conn:
+        row = conn.execute(PC_ITEM_SQL + " WHERE i.item_key = ?", (item_key,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "planning commission item not found")
+        row = dict(row)
+        item = pc_hearings.public_item(row)
+        doc = conn.execute("SELECT url, sha256, parse_status FROM pc_documents WHERE doc_id = ?",
+                           (row["doc_id"],)).fetchone()
+        minutes = conn.execute("SELECT url FROM pc_documents WHERE kind = 'minutes' AND meeting_date = ? "
+                               "AND parse_status != 'failed'", (row["meeting_date"],)).fetchone()
+        candidates = [dict(r) for r in conn.execute(
+            "SELECT c.decision_key, c.matched_on, c.council_after_days, d.meeting_date, d.title, s.status, "
+            "s.verified_outcome FROM pc_council_candidates c JOIN land_use_decisions d "
+            "ON d.decision_key = c.decision_key JOIN land_use_decision_status s ON s.decision_key = c.decision_key "
+            "WHERE c.item_key = ? ORDER BY d.meeting_date", (item_key,))]
+        parcels = pc_hearings.item_parcels(conn, item["gpins"])
+        as_of = quality.data_as_of(conn)
+    item.update({
+        "status": row["status"], "status_source": row["status_source"],
+        "recommendation": {"raw": row["recommendation_raw"], "normalized": row["minutes_recommendation"],
+                           "aye": row["aye"], "nay": row["nay"], "abstain": row["abstain"], "absent": row["absent"],
+                           "minutes_url": minutes["url"] if minutes else None},
+        "agenda": {"url": doc["url"], "sha256": doc["sha256"], "parse_status": doc["parse_status"]},
+        "parcels": parcels, "council_candidates": candidates, "data_as_of": as_of, "notice": PC_NOTICE,
+    })
+    return item
 
 
 @app.get("/api/land-use/export.csv")

@@ -769,6 +769,64 @@ $("landuse-leads-chip").addEventListener("click", () => {
 });
 renderLandUseControls();
 
+// ---------- Planning Commission hearings (earliest signal) ----------
+// A PC recommendation is advice to City Council, never an approval. Pins sit at
+// the centre of the item's parcel (by GPIN); items without one are counted.
+const PC_STATUS = {
+  scheduled: { label: "Scheduled for hearing", color: "#38bdf8" },
+  recommended_approval: { label: "PC recommended approval", color: "#a78bfa" },
+  recommended_denial: { label: "PC recommended denial", color: "#f87171" },
+  deferred: { label: "Deferred", color: "#fbbf24" },
+  withdrawn: { label: "Withdrawn", color: "#6b7280" },
+  recommendation_unmapped: { label: "Recommendation not recognized", color: "#9ca3af" },
+  no_recommendation_found: { label: "No recommendation found", color: "#9ca3af" },
+};
+const pcLayer = L.layerGroup();
+map.createPane("pc").style.zIndex = 640;
+let pcMeta = { count: 0, mapped: 0, coverage: null };
+
+function renderPcControls() {
+  if (!$("pc-layer-toggle").checked) { $("pc-legend").innerHTML = ""; return; }
+  const cov = pcMeta.coverage;
+  $("pc-legend").innerHTML = Object.values(PC_STATUS).slice(0, 5).map((v) => `
+    <span class="flood-legend-item"><span class="flood-swatch" style="background:${v.color}"></span>${esc(v.label)}</span>`).join("")
+    + `<span class="flood-legend-item">${esc(pcMeta.mapped)} of ${esc(pcMeta.count)} hearing items mapped`
+    + (cov ? ` · agendas found for ${esc(cov.agenda_found)} of ${esc(cov.months)} months${cov.verified ? "" : " (coverage unverified)"}` : "")
+    + `. A recommendation is advice to City Council, not an approval.</span>`;
+}
+
+async function loadPc() {
+  pcLayer.clearLayers();
+  try {
+    const res = await api("/api/land-use/pc-items?limit=2000");
+    const mapped = res.items.filter((d) => d.lat != null);
+    pcMeta = { count: res.count, mapped: mapped.length, coverage: res.coverage };
+    for (const d of mapped) {
+      const st = PC_STATUS[d.status] || { label: d.status, color: "#888" };
+      const who = d.applicants.names.length ? d.applicants.names.map(esc).join("; ") : "Applicant: individual (name not shown)";
+      L.circleMarker([d.lat, d.lng], { pane: "pc", radius: 7, color: "#0b1220", weight: 1.5, fillColor: st.color, fillOpacity: 0.9 })
+        .bindPopup(`<div class="popup"><b>${esc(d.request || "Planning Commission item")}</b>
+          <div>${esc(st.label)} · hearing ${esc(d.meeting_date)}</div>
+          <div>${who}</div><div class="muted">${esc(d.addresses || "")}</div>
+          <a href="/static/lead.html?pc=${encodeURIComponent(d.item_key)}">Open hearing details</a></div>`)
+        .addTo(pcLayer);
+    }
+  } catch (err) {
+    toast(`Planning Commission layer unavailable: ${err.message}`, true);
+  }
+  renderPcControls();
+}
+
+$("pc-layer-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    pcLayer.addTo(map);
+    loadPc();
+  } else {
+    map.removeLayer(pcLayer);
+    renderPcControls();
+  }
+});
+
 // ---------- parcels (Stage 3) ----------
 // Parcel flood is a screening estimate from area shares (the city's parcel
 // data is "not valid for flood-zone determination"); shares are always shown.

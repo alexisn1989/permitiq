@@ -30,20 +30,39 @@ ORG_RE = re.compile(
     r"\b(?:L\.?L\.?C|L\.?L\.?P|L\.?P|INC|INCORPORATED|CORP|CORPORATION|COMPANY|CO|LTD|PLLC|PC|"
     r"HOLDINGS?|PROPERTIES|PARTNERS(?:HIP)?|ASSOCIATES|ASSOCIATION|GROUP|DEVELOPMENT|DEVELOPERS|"
     r"VENTURES?|INVESTMENTS?|REALTY|ENTERPRISES?|HOMES|BUILDERS|CHURCH|MINISTRIES|BANK|UNIVERSITY|"
-    r"SCHOOLS?|FOUNDATION|AUTHORITY|HOSPITAL|CITY\s+OF|COUNTY|COMMONWEALTH)\b\.?", re.IGNORECASE)
-_PART_SPLIT = re.compile(r"\s+(?:and|&)\s+|\s*;\s*", re.IGNORECASE)
+    r"SCHOOLS?|FOUNDATION|AUTHORITY|HOSPITAL|CITY\s+OF|COUNTY|COMMONWEALTH|DIOCESE|PARISH|TEMPLE|MOSQUE|"
+    r"SYNAGOGUE|ACADEMY|CREDIT\s+UNION|DEPARTMENT|STATE\s+OF|UNITED\s+STATES)\b\.?", re.IGNORECASE)
+_PART_SPLIT = re.compile(r"\s+(?:and|&)\s+|\s*[;,]\s*(?:(?:and|&)\s+)?", re.IGNORECASE)
+# ", LLC" / ", L.L.C." / ", Inc." after a comma is part of the name before it, not a separate party
+_SUFFIX_ONLY = re.compile(r"^(?:L\.?L\.?C|L\.?L\.?P|L\.?P|INC|INCORPORATED|CORP|CORPORATION|CO|LTD|PLLC|PC|LC)\.?$",
+                          re.IGNORECASE)
 
 _NUM = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
 SCALE_RES = [
     ("acres", re.compile(rf"(?P<v>{_NUM})\s*(?:-|\s)?\s*(?:\+/-\s*|±\s*)?acres?\b", re.IGNORECASE)),
-    ("units", re.compile(rf"(?P<v>{_NUM})\s+(?:(?:dwelling|residential|multi-?family|single-?family|apartment|"
-                         r"townhouse|condominium)\s+)?(?:units|dwellings|homes|townhouses|apartments)\b",
+    ("units", re.compile(rf"(?P<v>{_NUM})(?:\s+|-\s?)(?:(?:dwelling|residential|multi-?family|single-?family|"
+                         r"apartment|townhouse|condominium)\s+)?(?:units?|dwellings|homes|townhouses|apartments)\b",
                          re.IGNORECASE)),
     ("lots", re.compile(rf"(?P<v>{_NUM})\s+(?:residential\s+|single-?family\s+)?lots\b", re.IGNORECASE)),
-    ("square_feet", re.compile(rf"(?P<v>{_NUM})\s*(?:-|\s)?\s*(?:square\s+feet|square\s+foot|sq\.?\s*ft\.?|s\.f\.)",
+    ("square_feet", re.compile(rf"(?P<v>{_NUM})\s*(?:-|\s)?\s*(?:square\s+feet|square\s+foot|sq\.?\s*ft\.?|s\.f\.|sf\b)",
                                re.IGNORECASE)),
 ]
 APPROVED = ("approved", "approved_with_conditions")
+
+
+def is_organization(name: str | None) -> bool:
+    """True only when every listed party ("A and B", "A & B", "A; B") is clearly an
+    organization. Any part that may be a private person makes the whole name private."""
+    parts: list[str] = []
+    for p in (x.strip() for x in _PART_SPLIT.split(name or "")):
+        if not p:
+            continue
+        if parts and _SUFFIX_ONLY.match(p):
+            parts[-1] = f"{parts[-1]}, {p}"
+        else:
+            parts.append(p)
+    # "LC" is a Virginia limited-company suffix ("Real Estate Pursuits LC")
+    return bool(parts) and all(ORG_RE.search(p) or re.search(r"\bL\.?C\.?$", p) for p in parts)
 
 
 def applicant(title: str | None) -> dict:
@@ -52,8 +71,7 @@ def applicant(title: str | None) -> dict:
     if not m:
         return {"name": None, "kind": None, "text": None}
     name = m.group("name").strip(" ,")
-    parts = [p for p in _PART_SPLIT.split(name) if p.strip()]
-    if parts and all(ORG_RE.search(p) for p in parts):
+    if is_organization(name):
         return {"name": name, "kind": "organization", "text": m.group(0).strip()}
     # any part that may be a private person: withhold the whole name (and its span)
     return {"name": None, "kind": "withheld", "text": None}

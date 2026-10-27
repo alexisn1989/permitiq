@@ -376,6 +376,31 @@ python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re
   - **Limits:** this is not authenticated and not tamper-proof. The acting user is self-reported, and anyone who can write the database file can alter it.
   - **Where to see it:** `GET /api/audit/{review_table}` with exactly that table's key, and "Review history" on the lead screen.
 
+### Planning Commission hearings (earliest leads, Virginia Beach)
+
+Every land-use application goes to a Planning Commission public hearing weeks before City Council votes on it. The Commission's agendas and minutes are PDFs on the city's S3 bucket.
+
+```bash
+python scripts/pc_index.py --out reports/pc_index.json        # the city's agenda index (needs virginiabeach.gov)
+python scripts/ingest_pc_documents.py --index reports/pc_index.json --reports-dir reports
+python scripts/link_pc_council.py                             # possible later Council decisions
+python scripts/pc_report.py --out reports                     # pc_leads.csv, pc_coverage.json
+python scripts/run_vb_pipeline.py --phase full --pc ...       # the same steps inside the runbook
+```
+
+- **Parsing** (`ingest/pc_agenda.py`): the 2021 (annotated), 2024 and 2026 agenda layouts and the minutes.
+  - **Agendas:** each item yields the applicant and owner, request, address, GPINs, Council district, Accela records, staff planner and description.
+  - **Minutes:** each item number yields the recommendation and vote tally.
+  - **Text extraction:** `pypdf`, in an isolated interpreter.
+- **Never dropped:** every item keeps its raw block. An item that doesn't parse is kept with its warnings and listed in `pc_parse_review.csv`.
+- **A recommendation is not an approval.** `pc_item_status` gives `scheduled`, `recommended_approval`, `recommended_denial`, `deferred`, `withdrawn`, `recommendation_unmapped` or `no_recommendation_found`. Unknown recommendation text maps to `unmapped`, never to approval. Nothing here changes Council statuses or links.
+- **Council links are candidates:** a later Council decision on the same GPIN or street address, within 12 months of the hearing.
+- **Privacy:**
+  - names of private individuals are withheld in the API, UI and CSV: organizations only, and any person in a list withholds the whole name;
+  - raw blocks are never served and stay out of the hand-off extract.
+- **Coverage:** agendas found are compared month by month against the expected hearings (the 2nd Wednesday of each month). Coverage reads "unverified" until the city's agenda index has been read.
+- **Where to see it:** the lead screen (`/static/lead.html?pc=<item_key>`), the map layer "Planning Commission hearings", and `GET /api/land-use/pc-items[/{key}]`.
+
 ---
 
 ## API
@@ -402,6 +427,8 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/parcels/{gpin}.geojson` | One parcel outline from the active parcel load (ETag / 304; 404 if absent) |
 | `GET /api/quality` | Coverage, unresolved cases, refresh age; accuracy only while its data snapshot is current |
 | `GET /api/data-as-of` | Recorded source dates and the permit observation window |
+| `GET /api/land-use/pc-items` | Planning Commission agenda items with status; filters `status`, `district`, `date_from/to`, `include_city`; coverage summary |
+| `GET /api/land-use/pc-items/{key}` | One item: request, parcels and flood class by GPIN, recommendation and vote, source PDFs, possible Council decisions |
 | `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
@@ -414,7 +441,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**430 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**456 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

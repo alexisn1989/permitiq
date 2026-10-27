@@ -102,7 +102,70 @@
       <p class="muted small">${esc(f.source_note)}${f.title_truncated ? " The title was cut at 400 characters in the source, so details may be missing." : ""}</p>`;
   }
 
-  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml };
+  const PC_STATUS_TEXT = {
+    scheduled: "Scheduled for a Planning Commission hearing",
+    recommended_approval: "Planning Commission recommended approval — City Council decides",
+    recommended_denial: "Planning Commission recommended denial — City Council decides",
+    deferred: "Deferred by the Planning Commission",
+    withdrawn: "Withdrawn",
+    recommendation_unmapped: "Recommendation recorded but not recognized — see the minutes",
+    no_recommendation_found: "Minutes found, but no recommendation for this item",
+  };
+  const FLOOD_SHORT = { sfha_v: "SFHA – coastal V/VE", sfha_a: "SFHA – A/AE", shaded_x: "Shaded X (0.2%)",
+    matched_non_sfha: "Outside the SFHA", screening_sliver: "Outside the SFHA (sliver)", no_polygon: "No FEMA polygon" };
+
+  function names(n, what) {
+    if (!n) return "–";
+    const shown = (n.names || []).map(esc).join("; ");
+    const hidden = n.withheld ? `${n.withheld} individual ${what}${n.withheld === 1 ? "" : "s"} — name not shown` : "";
+    return [shown, hidden ? `<span class="muted">${hidden}</span>` : ""].filter(Boolean).join("<br>") || "–";
+  }
+
+  // item: GET /api/land-use/pc-items/{key}. Escaped HTML for the Planning Commission lead page.
+  function buildPcItemHtml(it) {
+    const r = it.recommendation || {};
+    const vote = r.aye == null ? "" : ` · vote ${esc(r.aye)}–${esc(r.nay)} (abstain ${esc(r.abstain)}, absent ${esc(r.absent)})`;
+    const src = it.status_source === "annotated_agenda"
+      ? ` <span class="muted small">(from the annotated agenda: “${esc(it.agenda_result_raw)}${it.agenda_council_on ? ` — Council on ${esc(it.agenda_council_on)}` : ""}”)</span>` : "";
+    const sizes = (it.size_from_description || []).map((x) => `${esc(fmtNum(x.value))} ${esc(SCALE_LABEL[x.kind] || x.kind)} <span class="muted small">(“${esc(x.text)}”)</span>`);
+    const parcels = (it.parcels || []).map((p) => p.gpin
+      ? `<tr><td>${esc(p.agenda_gpin)}</td><td>${esc(p.gpin)}${p.ambiguous ? ' <span class="warn small">one of several parcels</span>' : ""}</td><td>${esc(p.zoning || "–")} · ${esc(p.land_use || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td></tr>`
+      : `<tr><td>${esc(p.agenda_gpin)}</td><td colspan="3" class="muted">not in the active parcel layer</td></tr>`).join("");
+    const cands = (it.council_candidates || []).map((c) =>
+      `<li><a href="/static/lead.html?key=${encodeURIComponent(c.decision_key)}">${esc(c.meeting_date)} — ${esc((c.title || "").slice(0, 140))}</a> <span class="muted small">(matched on ${esc(c.matched_on)}, ${esc(c.council_after_days)} days after the hearing; ${esc(c.status)})</span></li>`).join("");
+    return `
+      <section class="card">
+        <div class="card-head"><h2>${esc(it.addresses || it.request || it.item_key)}</h2>
+          <span class="status-pill">${esc(PC_STATUS_TEXT[it.status] || it.status)}</span></div>
+        <p class="muted">${esc(PC_STATUS_TEXT[it.status] || it.status)}${vote}${src}</p>
+        <h3>Planning Commission hearing</h3>
+        <dl class="facts">
+          <div><dt>Hearing</dt><dd>${esc(it.meeting_date)} · item ${esc(it.item_label)}${it.section ? ` · ${esc(it.section)}` : ""}</dd></div>
+          <div><dt>Applicant</dt><dd>${names(it.applicants, "applicant")}</dd></div>
+          <div><dt>Property owner</dt><dd>${names(it.owners, "owner")}</dd></div>
+          <div><dt>Request</dt><dd>${esc(it.request || "–")}</dd></div>
+          <div><dt>Description</dt><dd>${esc(it.description || "–")}</dd></div>
+          <div><dt>Size</dt><dd>${sizes.length ? sizes.join("<br>") : '<span class="muted">not stated</span>'}</dd></div>
+          <div><dt>Council district</dt><dd>${esc(it.council_district_text || "–")}</dd></div>
+          <div><dt>Accela records</dt><dd>${esc((it.accela_records || []).join(", ") || "–")}</dd></div>
+          <div><dt>Staff planner</dt><dd>${esc(it.staff_planner || "–")}</dd></div>
+          <div><dt>Sources</dt><dd>${escLinkify((it.agenda || {}).url || "")}${r.minutes_url ? `<br>${escLinkify(r.minutes_url)}` : ""}</dd></div>
+        </dl>
+        ${(it.warnings || []).length ? `<p class="warn small">Parsing notes: ${esc(it.warnings.join("; "))}</p>` : ""}
+      </section>
+      <section class="card">
+        <h3>Parcels</h3>
+        ${parcels ? `<table class="grid"><thead><tr><th>Agenda GPIN</th><th>Parcel</th><th>Zoning · use</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No GPIN on the agenda.</p>'}
+      </section>
+      <section class="card">
+        <h3>Possible City Council decisions</h3>
+        ${cands ? `<ul>${cands}</ul>` : '<p class="muted">None found yet in the Council data.</p>'}
+        <p class="muted small">Matched by parcel or street address within 12 months after the hearing: candidates, not confirmed.</p>
+      </section>
+      <p class="muted small">${esc(it.notice || "")}</p>`;
+  }
+
+  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
