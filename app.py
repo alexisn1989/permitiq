@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import flood_stats, land_use, land_use_stats, quality
+from ingest import flood_stats, land_use, land_use_stats, lead_facts, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -743,9 +743,15 @@ def land_use_decision_detail(decision_key: str):
                                   (decision_key,)).fetchone()[0]
         cov = land_use_stats.coverage(conn)
         as_of = quality.data_as_of(conn)
+        try:  # the timing benchmark needs min_n; without a config the rest is still shown
+            cfg = land_use.load_config(LAND_USE_CONFIG_PATH)
+        except flood_stats.ConfigError:
+            cfg = None
+        facts = lead_facts.lead_facts(conn, row, parcel_rows, cfg)
     return {"decision": {k: row[k] for k in DECISION_FIELDS}, "meeting_id": meeting_id, "addresses": addresses,
             "parcel_rows": parcel_rows, "links": links, "conflicts": conflicts,
-            "review": dict(review) if review else None, "coverage": cov, "data_as_of": as_of}
+            "review": dict(review) if review else None, "coverage": cov, "data_as_of": as_of,
+            "lead_facts": facts}
 
 
 @app.get("/api/land-use/export.csv")

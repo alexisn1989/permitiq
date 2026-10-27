@@ -440,7 +440,7 @@ body.lead-page { display: block; height: auto; min-height: 100%; }
 .lead .small { font-size: 0.78rem; }
 .lead .warn { color: var(--amber); }
 .lead dl.facts, .lead dl.asof { display: grid; gap: 0.35rem; margin: 0; }
-.lead dl div { display: grid; grid-template-columns: 11rem 1fr; gap: 0.5rem; }
+.lead dl > div { display: grid; grid-template-columns: 11rem 1fr; gap: 0.5rem; }
 .lead dt { color: var(--muted); }
 .lead dd { margin: 0; overflow-wrap: anywhere; }
 .lead dd a { color: var(--accent); }

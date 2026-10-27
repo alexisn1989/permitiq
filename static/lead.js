@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const QUEUE_KEY = "permitiq.linkReviewQueue.v1";
 const key = new URLSearchParams(location.search).get("key");
 
-// esc, escLinkify, buildReviewCsv and buildHistoryHtml come from /static/lead_util.js.
+// esc, escLinkify, buildReviewCsv, buildHistoryHtml and buildLeadFactsHtml come from /static/lead_util.js.
 
 function pct(v) { return v == null ? "–" : `${(100 * v).toFixed(1)}%`; }
 
@@ -163,6 +163,11 @@ function render(d) {
         ${rv ? `<div><dt>Evidence</dt><dd>${escLinkify(rv.evidence)}</dd></div>` : ""}
       </dl>
       ${conflicts ? `<h3>Source conflicts</h3><ul>${conflicts}</ul>` : ""}
+    </section>
+
+    <section class="card">
+      <h3>Lead summary</h3>
+      ${buildLeadFactsHtml(d.lead_facts)}
     </section>
 
     <section class="card">

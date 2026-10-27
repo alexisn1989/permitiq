@@ -351,6 +351,15 @@ python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re
   - flood screening;
   - data as of.
 - **Marking links.** "Mark bad link" / "Confirm" queue verdicts in the browser, and "Download review file" saves a CSV for `review_land_use.py --links`. The API stays read-only.
+- **Lead summary** (`ingest/lead_facts.py`), on the lead screen, in `GET /api/land-use/decisions/{key}` as `lead_facts`, and as extra columns in `land_use_leads.csv`:
+  - **Applicant, request and size** (acres, units, lots, square feet) are extracted from the Council title and shown with the exact text they came from, labeled unverified.
+  - **Applicant names** are shown only when every listed applicant is an organization (LLC, Inc, Corp…); otherwise the name is withheld. Trusts count as individuals, because they are often named after a person.
+  - **Parcel acreage** comes from the parcel layer and is shown separately.
+  - **Timing, for verified approvals only:**
+    - days from approval to the last permit refresh;
+    - the end of the link window;
+    - a benchmark range for the first permit application, from confirmed links only, over all verified approvals. It is suppressed below `min_n`.
+  - **"Older than the typical range"** is flagged when no permit has been observed and the lead is past that range. Extracted values never affect status, links or approval.
 - **Backfill completeness.** `verify_permit_backfill.py --since …` compares the source's own count and OBJECTID set for the same `ApplicationDate` window with the database.
   - Truly missing permits are fetched by ID and topped up. Duplicate permit numbers, rows without a permit number, and rows with no application date are reported.
   - Counts by application year are listed side by side.
@@ -405,7 +414,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**417 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**430 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

@@ -68,6 +68,14 @@ def _timing_block(conn, measure: str, states: tuple[str, ...], min_n: int, nc_co
     return out
 
 
+def timing_benchmark(conn, cfg: dict) -> dict:
+    """Headline time-to-first-application block (confirmed links only), the
+    same numbers /api/land-use/stats reports under confirmed_only."""
+    min_n = cfg["new_construction"]["min_n"]
+    return {**_timing_block(conn, "t_first_application", ("confirmed",), min_n,
+                            bool(cfg["new_construction"]["include"])), "min_n": min_n}
+
+
 def compute_land_use_stats(conn, cfg: dict, min_n: int | None = None) -> dict:
     min_n = min_n or cfg["new_construction"]["min_n"]
     nc_configured = bool(cfg["new_construction"]["include"])

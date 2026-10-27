@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
-from ingest import land_use, land_use_stats  # noqa: E402
+from ingest import land_use, land_use_stats, lead_facts  # noqa: E402
 from ingest.flood_stats import ConfigError  # noqa: E402
 
 BASE = Path(__file__).resolve().parent.parent
@@ -93,11 +93,12 @@ def main(argv=None) -> int:
                 return 1
             truncated = conn.execute("SELECT COUNT(*) FROM land_use_decisions WHERE title_truncated = 1").fetchone()[0]
             leads = conn.execute(
-                "SELECT d.decision_key, d.meeting_date, d.land_use_label, d.title, s.verified_outcome, "
+                "SELECT d.decision_key, d.meeting_date, d.land_use_label, d.title, d.title_truncated, s.verified_outcome, s.status, "
                 "(SELECT group_concat(a.raw_text, ' | ') FROM land_use_decision_addresses a "
                 " WHERE a.decision_key = d.decision_key) AS addresses "
                 "FROM land_use_decisions d JOIN land_use_decision_status s ON s.decision_key = d.decision_key "
                 "WHERE s.status = 'no_candidate_permit' ORDER BY d.meeting_date").fetchall()
+            timings = {r["decision_key"]: lead_facts.timing(conn, dict(r), cfg) for r in leads}
     except ConfigError as e:
         print(f"[FATAL] {e}", file=sys.stderr)
         return 1
@@ -121,12 +122,22 @@ def main(argv=None) -> int:
     cov = stats["coverage"]
     with (args.out / "land_use_leads.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
+        # applicant / request / size are extracted from the title (unverified); applicant only when an organization
         w.writerow(["stage", "decision_key", "meeting_date", "land_use_label", "verified_outcome", "addresses", "title",
-                    "permits_observed_from", "permits_observed_to"])
+                    "permits_observed_from", "permits_observed_to", "applicant_from_title", "request_from_title",
+                    "size_from_title", "days_since_approval", "link_window_end", "typical_first_application_from",
+                    "typical_first_application_to", "past_typical_range"])
         for r in leads:
+            a, t = lead_facts.applicant(r["title"]), timings[r["decision_key"]]
+            typ = t["typical_first_application"] or {}
             w.writerow(["provisional" if args.provisional else "final", r["decision_key"], r["meeting_date"],
                         r["land_use_label"], r["verified_outcome"],
-                        r["addresses"], r["title"], cov["backfill_from"], cov["last_refresh_at"]])
+                        r["addresses"], r["title"], cov["backfill_from"], cov["last_refresh_at"],
+                        a["name"] or ("(individual: withheld)" if a["kind"] == "withheld" else ""),
+                        lead_facts.request(r["title"])["text"] or "",
+                        "; ".join(x["text"] for x in lead_facts.scale(r["title"])),
+                        t["days_since_approval"], t["window_end"], typ.get("from", ""), typ.get("to", ""),
+                        "" if t["past_typical_range"] is None else int(t["past_typical_range"])])
     print(f"Wrote {args.out / 'land_use_vb.md'}, land_use_vb.csv, land_use_leads.csv ({len(leads)} leads)")
     print(f"status: {stats['by_status']}")
     return 0
