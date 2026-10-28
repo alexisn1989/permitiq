@@ -37,6 +37,7 @@ NEAR_FT = 100  # a line within this distance of a parcel is reported as near
 
 ENV = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/Environmental/MapServer"
 PLAN = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/Planning_and_Development/MapServer"
+UTIL = "https://geo.vbgov.com/mapservices/rest/services/Public_Utilities/Other_Utility_Information/MapServer"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class Layer:
     attrs: tuple[str, ...] = field(default_factory=tuple)  # source fields kept; nothing else is stored
     group_by: str | None = None  # an attribute to break the overlap down by (e.g. soil type)
     classification: bool = False  # covers the whole city (soils): report what is mapped, not "inside the layer"
+    near_ft: float | None = None  # polygon layers: also report the distance to the nearest polygon within this
 
 
 LAYERS = {l.key: l for l in (
@@ -70,6 +72,20 @@ LAYERS = {l.key: l for l in (
           "Work needs Historical Review Board review in addition to the standard process.", ("Name",), "Name"),
     Layer("historic_kempsville", f"{PLAN}/25", "polygon_share", "Historic Kempsville Area Overlay District",
           "Design standards and review apply in the overlay.", ("Name",), "Name"),
+    # Utility project-file index (Public Utilities): areas of past or planned city projects, dates mostly not
+    # recorded. A signal that utility work happened or is planned here -- never pipe capacity.
+    Layer("city_sewer_projects", f"{UTIL}/3", "polygon_share", "City sewer project area",
+          "Area of a city sewer project on file (project-file index; not pipe locations or capacity).",
+          ("PU_NUM", "PROJECT_NAME"), "PROJECT_NAME"),
+    Layer("city_water_projects", f"{UTIL}/6", "polygon_share", "City water project area",
+          "Area of a city water project on file (project-file index; not pipe locations or capacity).",
+          ("PU_NUM", "PROJECT_NAME"), "PROJECT_NAME"),
+    Layer("water_sewer_projects", f"{UTIL}/9", "polygon_share", "City water and sewer project area",
+          "Area of a combined city water and sewer project on file (project-file index).",
+          ("PU_NUM", "PROJECT_NAME"), "PROJECT_NAME"),
+    Layer("sewer_pump_station_projects", f"{UTIL}/18", "polygon_share", "Sewer pump station project",
+          "Site of a city sewer pump station project on file. Distance is to the project site, not a service "
+          "area; capacity is not published.", ("PU_NUM", "PROJECT_NAME"), "PROJECT_NAME", near_ft=1000),
     Layer("dam_break", f"{PLAN}/23", "polygon_share", "Dam break inundation zone",
           "Mapped inundation area if a dam fails (state dam-safety rules can limit development).",
           ("NAME", "HAZARD_LEVEL"), "NAME"),
@@ -151,12 +167,10 @@ class LayerIndex:
         area = p.area
         if self.layer.kind == "polygon_share":
             hits = [i for i in self.tree.query(p, predicate="intersects")]
-            if not hits or area <= 0:
-                return None
-            inter = union_all([self.ft[i] for i in hits]).intersection(p)
-            overlap = inter.area
+            inter = union_all([self.ft[i] for i in hits]).intersection(p) if hits and area > 0 else None
+            overlap = inter.area if inter is not None else 0.0
             if overlap <= 0:
-                return None
+                return self._nearest(p) if self.layer.near_ft else None
             detail = {}
             if self.layer.group_by:
                 by: dict[str, float] = {}
@@ -177,6 +191,17 @@ class LayerIndex:
         dist = 0.0 if inside > 0 else p.distance(lines)
         return {"overlap_sqft": None, "share": None, "line_length_ft": round(inside, 1),
                 "distance_ft": round(dist, 1), "detail": {}}
+
+
+    def _nearest(self, p) -> dict | None:
+        """No overlap: the distance to the nearest polygon within the layer's near_ft."""
+        near = list(self.tree.query(p, predicate="dwithin", distance=self.layer.near_ft))
+        if not near:
+            return None
+        d = {i: p.distance(self.ft[i]) for i in near}
+        i = min(d, key=d.get)
+        return {"overlap_sqft": None, "share": 0.0, "line_length_ft": None, "distance_ft": round(d[i], 1),
+                "detail": {"nearest": self.rows[i]["attrs"].get(self.layer.group_by) if self.layer.group_by else None}}
 
 
 def load_layer_index(conn, layer: Layer) -> tuple[int, LayerIndex] | None:
@@ -203,6 +228,8 @@ def describe(layer_key: str, row: dict) -> str:
         if row["line_length_ft"]:
             return f"{layer.label} crosses the parcel ({row['line_length_ft']:,.0f} ft of line inside it)"
         return f"{layer.label} lies {row['distance_ft']:,.0f} ft from the parcel"
+    if not row["overlap_sqft"]:
+        return f"{layer.label} {row['distance_ft']:,.0f} ft from the parcel"
     acres = row["overlap_sqft"] / SQFT_PER_ACRE
     return f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the {layer.label.lower()}"
 
@@ -250,7 +277,7 @@ def public_constraints(conn, gpins: list[str]) -> dict:
                            if k in LAYERS],
         "boards_checked": [{"board": k, "label": BOARD_LAYERS[k][1], "as_of": v} for k, v in sorted(boards.items())
                            if k in BOARD_LAYERS],
-        "not_covered": ["sewer / water capacity (no public data)", "hydric soils and water table (USDA, pending)",
+        "not_covered": ["sewer / water capacity and pipe locations (not published)", "hydric soils and water table (USDA, pending)",
                         "NWI wetlands (pending)", "VDOT traffic (pending)", "state / National Register historic "
                         "boundaries (pending)"],
         "notice": "Screening estimates from the city's GIS layers, not a determination: confirm with a site survey "
@@ -259,6 +286,7 @@ def public_constraints(conn, gpins: list[str]) -> dict:
 
 
 CSV_COLUMNS = ("rpa", "southern_watersheds_buffer_share", "special_floodplain_share", "shrink_swell_share",
+               "sewer_pump_station_project_ft", "utility_project_area",
                "historic_overlay", "dam_break", "prior_cbpa_actions", "prior_wetlands_board_actions",
                "prior_hrb_actions")
 
@@ -281,6 +309,12 @@ def csv_summary(conn, gpins: list[str]) -> dict:
                 best[k] = dict(r)
         elif (r["share"] or 0) > (best.get(k, {}).get("share") or 0):
             best[k] = dict(r)
+    ps = conn.execute(f"SELECT MIN(distance_ft), MAX(overlap_sqft) FROM parcel_constraints_effective WHERE "
+                      f"layer_key = 'sewer_pump_station_projects' AND gpin IN ({marks})", gpins).fetchone()
+    if ps[0] is not None or ps[1]:
+        out["sewer_pump_station_project_ft"] = 0 if ps[1] else round(ps[0])
+    out["utility_project_area"] = " ".join(k for k in ("city_sewer_projects", "city_water_projects",
+                                                       "water_sewer_projects") if (best.get(k) or {}).get("share"))
     if "rpa" in best:
         b = best["rpa"]
         out["rpa"] = "crosses" if b["line_length_ft"] else f"within {b['distance_ft']:.0f} ft"

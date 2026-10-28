@@ -49,8 +49,11 @@ SWB = [_poly(1, _box(-76.005, 36.803, -76.003, 36.807))]                      # 
 RPA = [_line(1, [[-76.0095, 36.803], [-76.0095, 36.807]]),                     # crosses parcel 2400... (0.002 deg)
        _line(2, [[-75.985 + 50 / FT_LON, 36.804], [-75.985 + 50 / FT_LON, 36.806]])]  # 50 ft east of 2410...
 HIST = [_poly(1, _box(-76.0420, 36.8030, -76.0380, 36.8070), Name="<b>Test District</b>")]  # covers 2430...
+# a pump-station project site 300 ft north of parcel 1489... (no overlap: reported by distance)
+PS = [_poly(1, _box(-76.0035, 36.806 + 300 / C.FT_PER_DEG, -76.0030, 36.8065 + 300 / C.FT_PER_DEG),
+            PU_NUM="X01-001", PROJECT_NAME="Example Pump Station PS-999")]
 GEOMETRY = {"southern_watersheds_buffer": "esriGeometryPolygon", "rpa": "esriGeometryPolyline",
-            "historic_overlay": "esriGeometryPolygon"}
+            "historic_overlay": "esriGeometryPolygon", "sewer_pump_station_projects": "esriGeometryPolygon"}
 
 
 def _layers(data, count_delta=0):
@@ -69,13 +72,14 @@ def _layers(data, count_delta=0):
     return fetch
 
 
-DATA = {"southern_watersheds_buffer": SWB, "rpa": RPA, "historic_overlay": HIST}
+DATA = {"southern_watersheds_buffer": SWB, "rpa": RPA, "historic_overlay": HIST, "sewer_pump_station_projects": PS}
 
 
 @pytest.fixture
 def measured(flooded, monkeypatch):
     monkeypatch.setattr(lc_s, "fetch_json", _layers(DATA))
-    assert lc_s.main(["--layer", "southern_watersheds_buffer", "--layer", "rpa", "--layer", "historic_overlay"]) == 0
+    assert lc_s.main(["--layer", "southern_watersheds_buffer", "--layer", "rpa", "--layer", "historic_overlay",
+                      "--layer", "sewer_pump_station_projects"]) == 0
     fetch, _ = _stub(FEATURES)
     monkeypatch.setattr(load_s, "fetch_json", fetch)
     assert load_s.main(["--url", LAYER]) == 0
@@ -110,6 +114,14 @@ def test_polygon_share_and_acres(measured):
     assert r["overlap_sqft"] == pytest.approx(expected_sqft, rel=1e-4)
     h = _rows(measured)[("24300000000000", "historic_overlay")]
     assert h["share"] == 1.0 and json.loads(h["detail_json"])["by"][0]["name"] == "<b>Test District</b>"
+
+
+def test_pump_station_project_reported_by_distance(measured):
+    r = _rows(measured)[("14892864850000", "sewer_pump_station_projects")]
+    assert r["overlap_sqft"] is None and r["distance_ft"] == pytest.approx(300, abs=1)
+    assert json.loads(r["detail_json"])["nearest"] == "Example Pump Station PS-999"
+    assert C.describe("sewer_pump_station_projects", r) == "Sewer pump station project 300 ft from the parcel"
+    assert ("24000000000000", "sewer_pump_station_projects") not in _rows(measured)  # beyond 1,000 ft
 
 
 def test_line_crossing_and_distance_never_area(measured):
@@ -163,7 +175,8 @@ def test_api_csv_and_names(measured, tmp_path, monkeypatch):
     assert any("sewer" in x for x in body["not_covered"])
     assert client.get("/api/parcels/99999999999999/constraints").status_code == 404
     f = client.get("/api/land-use/filings/2025-PCCC-00001").json()
-    assert {c["layer"] for c in f["site_constraints"]["constraints"]} == {"southern_watersheds_buffer"}
+    assert {c["layer"] for c in f["site_constraints"]["constraints"]} == {"southern_watersheds_buffer",
+                                                                         "sewer_pump_station_projects"}
     fc = client.get("/api/constraints/rpa.geojson?bbox=-76.02,36.80,-75.98,36.81").json()
     assert len(fc["features"]) == 2
     assert client.get("/api/constraints/nope.geojson?bbox=-76.02,36.80,-75.98,36.81").status_code == 404
@@ -175,6 +188,7 @@ def test_api_csv_and_names(measured, tmp_path, monkeypatch):
     rows = {r["pln_id"]: r for r in csv.DictReader((tmp_path / "filing_leads.csv").open())}
     assert rows["2025-PCCC-00001"]["southern_watersheds_buffer_share"] == "0.5"
     assert rows["2025-PCCC-00001"]["prior_cbpa_actions"] == "1"
+    assert rows["2025-PCCC-00001"]["sewer_pump_station_project_ft"] == "300"
     assert rows["2026-PCCC-00002"]["rpa"] in ("crosses", "within 50 ft")
     assert "Jane Q Public" not in (tmp_path / "filing_leads.csv").read_text()
 
