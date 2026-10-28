@@ -26,13 +26,16 @@ def feature_id(f: dict, oid_field: str = "OBJECTID"):
 
 def fetch_all_by_ids(fetch: Callable[..., dict], url: str, where: str, *, out_fields: str = "*",
                      batch: int = 200, oid_field: str = "OBJECTID", geometry: bool = True,
-                     label: str = "layer") -> list[dict]:
+                     label: str = "layer", extra: dict | None = None) -> list[dict]:
     """Every feature matching `where` on `url` (a layer URL, without /query),
     as GeoJSON features in WGS84. `fetch(url, params)` is the JSON getter
-    (fetch_json_retry, or a test stub); it raises RuntimeError on failure."""
+    (fetch_json_retry, or a test stub); it raises RuntimeError on failure.
+    `extra` adds query parameters to the count and ID queries (e.g. an envelope
+    geometry filter); the features are then fetched by those IDs."""
     q = f"{url}/query"
-    expected = int(fetch(q, {"where": where, "returnCountOnly": "true", "f": "json"})["count"])
-    ids = sorted(fetch(q, {"where": where, "returnIdsOnly": "true", "f": "json"}).get("objectIds") or [])
+    flt = {"where": where, **(extra or {})}
+    expected = int(fetch(q, {**flt, "returnCountOnly": "true", "f": "json"})["count"])
+    ids = sorted(fetch(q, {**flt, "returnIdsOnly": "true", "f": "json"}).get("objectIds") or [])
     if len(set(ids)) != len(ids) or len(ids) != expected:
         raise IncompleteRead(f"{label}: count {expected} but {len(ids)} object IDs ({len(set(ids))} unique)")
     out: list[dict] = []

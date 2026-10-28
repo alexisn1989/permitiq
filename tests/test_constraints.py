@@ -53,7 +53,9 @@ HIST = [_poly(1, _box(-76.0420, 36.8030, -76.0380, 36.8070), Name="<b>Test Distr
 PS = [_poly(1, _box(-76.0035, 36.806 + 300 / C.FT_PER_DEG, -76.0030, 36.8065 + 300 / C.FT_PER_DEG),
             PU_NUM="X01-001", PROJECT_NAME="Example Pump Station PS-999")]
 GEOMETRY = {"southern_watersheds_buffer": "esriGeometryPolygon", "rpa": "esriGeometryPolyline",
-            "historic_overlay": "esriGeometryPolygon", "sewer_pump_station_projects": "esriGeometryPolygon"}
+            "historic_overlay": "esriGeometryPolygon", "sewer_pump_station_projects": "esriGeometryPolygon",
+            "vdot_adt": "esriGeometryPolyline", "nrhp_points": "esriGeometryPoint",
+            "vdot_syip_lines": "esriGeometryPolyline", "nwi_wetlands": "esriGeometryPolygon"}
 
 
 def _layers(data, count_delta=0):
@@ -119,7 +121,7 @@ def test_polygon_share_and_acres(measured):
 def test_pump_station_project_reported_by_distance(measured):
     r = _rows(measured)[("14892864850000", "sewer_pump_station_projects")]
     assert r["overlap_sqft"] is None and r["distance_ft"] == pytest.approx(300, abs=1)
-    assert json.loads(r["detail_json"])["nearest"] == "Example Pump Station PS-999"
+    assert json.loads(r["detail_json"])["nearest"]["PROJECT_NAME"] == "Example Pump Station PS-999"
     assert C.describe("sewer_pump_station_projects", r) == "Sewer pump station project 300 ft from the parcel"
     assert ("24000000000000", "sewer_pump_station_projects") not in _rows(measured)  # beyond 1,000 ft
 
@@ -140,7 +142,7 @@ def test_incomplete_or_wrong_layer_writes_nothing(env, monkeypatch, capsys):
     monkeypatch.setattr(lc_s, "fetch_json", _layers(DATA, count_delta=1))
     assert lc_s.main(["--layer", "rpa"]) == 3
     monkeypatch.setattr(lc_s, "fetch_json", _layers({"rpa": RPA}))
-    assert lc_s.main(["--layer", "rpa", "--layer", "soils"]) == 3  # soils unreachable: rpa still loads
+    assert lc_s.main(["--layer", "rpa", "--layer", "dam_break"]) == 3  # dam_break unreachable: rpa still loads
     with db_module.db_readonly(env["db"]) as conn:
         assert [r[0] for r in conn.execute("SELECT layer_key FROM constraint_loads WHERE is_active = 1")] == ["rpa"]
     bad = dict(GEOMETRY, rpa="esriGeometryPolygon")
@@ -198,9 +200,9 @@ def test_quality_section_and_checklist(measured):
     with db_module.db_readonly(measured["db"]) as conn:
         q = quality.quality(conn)
     sq = q["site_constraints"]
-    assert sq["layers"]["rpa"]["features"] == 2 and "soils" in sq["missing_layers"]
+    assert sq["layers"]["rpa"]["features"] == 2 and "usda_soils" in sq["missing_layers"]
     line = next(x for x in quality.acceptance_checklist(q, None) if x["item"] == "Constraint layers complete")
-    assert line["passed"] is False and "soils" in line["detail"]
+    assert line["passed"] is False and "usda_soils" in line["detail"]
 
 
 def test_v11_to_v12_migration_keeps_data(env):
@@ -237,3 +239,102 @@ def test_constraints_html_escapes_and_says_screening():
     assert "<script>" not in out and "<b>X" not in out and "<u>P" not in out and "&lt;i&gt;Acme&lt;/i&gt; LLC" in out
     assert "Site constraints (screening)" in out and "Chesapeake Bay Preservation Area Board" in out
     assert "sewer / water capacity (no public data)" in out
+
+
+# ---------- phase 2: VDOT, National Register, NWI, USDA soils ----------
+
+def _feat_line(oid, coords, **props):
+    return {"type": "Feature", "id": oid, "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {"OBJECTID": oid, **props}}
+
+
+def _pt(oid, lng, lat, **props):
+    return {"type": "Feature", "id": oid, "geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "properties": {"OBJECTID": oid, **props}}
+
+
+E = -76.002  # east edge of parcel 14892864850000
+ADT = [_feat_line(1, [[E + 100 / FT_LON, 36.803], [E + 100 / FT_LON, 36.807]], ROUTE_COMMON_NAME="Example Rd",
+                  ADT=12000, ADT_QUALITY="A", DATA_DATE=1735689600000),
+       _feat_line(2, [[E + 250 / FT_LON, 36.803], [E + 250 / FT_LON, 36.807]], ROUTE_COMMON_NAME="Far Rd",
+                  ADT=50000, ADT_QUALITY="G", DATA_DATE=1735689600000)]
+NRHP_PTS = [_pt(1, E + 400 / FT_LON, 36.805, RESNAME="<b>Example House</b>", NRIS_Refnum="1", ResType="building")]
+SYIP = [_feat_line(1, [[E + 900 / FT_LON, 36.803], [E + 900 / FT_LON, 36.807]], UPC=123, DESCRIPTION="EXAMPLE WIDENING",
+                   SCOPE_OF_WORK_DESC="Widening", CN_START_DATE=1767225600000, TOTAL_ALLOCATIONS_CURRENT=1e6,
+                   PROJECT_MANAGER="Pat Manager")]
+NWI_F = [_poly(1, _box(-76.004, 36.804, -76.003, 36.805), ATTRIBUTE="PFO1A", WETLAND_TYPE="Freshwater Forested/Shrub Wetland")]
+
+
+def test_nearest_attributes_points_and_no_person_fields(measured, monkeypatch):
+    data = {"vdot_adt": ADT, "nrhp_points": NRHP_PTS, "vdot_syip_lines": SYIP, "nwi_wetlands": NWI_F}
+    monkeypatch.setattr(lc_s, "fetch_json", _layers(data))
+    assert lc_s.main([x for k in data for x in ("--layer", k)]) == 0
+    assert tag_s.main(["--all"]) == 0
+    r = _rows(measured)
+    adt = r[("14892864850000", "vdot_adt")]
+    nearest = json.loads(adt["detail_json"])["nearest"]
+    assert adt["distance_ft"] == pytest.approx(100, abs=0.5) and nearest["ADT"] == 12000  # the nearest, not the busiest
+    assert nearest["DATA_DATE"] == "2025-01-01"
+    assert C.describe("vdot_adt", adt) == ("VDOT traffic count (ADT) lies 100 ft from the parcel: Example Rd: "
+                                           "ADT 12,000 (2025-01-01, quality code A)")
+    pt = r[("14892864850000", "nrhp_points")]
+    assert pt["distance_ft"] == pytest.approx(400, abs=0.5) and "Example House" in C.describe("nrhp_points", pt)
+    sy = r[("14892864850000", "vdot_syip_lines")]
+    assert sy["distance_ft"] == pytest.approx(900, abs=0.5) and "construction start 2026-01-01" in C.describe(
+        "vdot_syip_lines", sy)
+    assert r[("14892864850000", "nwi_wetlands")]["share"] == 0.25
+    body = json.dumps(client.get("/api/parcels/14892864850000/constraints").json())
+    assert "Pat Manager" not in body and "PROJECT_MANAGER" not in body
+    with db_module.db_readonly(measured["db"]) as conn:
+        assert "Pat Manager" not in json.dumps([dict(x) for x in conn.execute("SELECT attrs_json FROM constraint_features")])
+        summ = C.csv_summary(conn, ["14892864850000"])
+    assert summ["nearest_adt"] == "12000 (Example Rd, 100 ft)" and summ["syip_within_ft"] == 900
+    assert summ["nrhp"] == "listed site 400 ft" and summ["nwi_wetland_share"] == 0.25
+
+
+def _sda_stub(polys, units, count=None, version="9/11/2026 3:42:55 PM"):
+    """polys: [(mupolygonkey, mukey, wkt)]; units: {mukey: attrs}."""
+    def query(sql):
+        if sql.startswith("SELECT COUNT(*)"):
+            return [{"n": len(polys) if count is None else count}]
+        if sql.startswith("SELECT saverest"):
+            return [{"saverest": version}]
+        if sql.startswith("SELECT DISTINCT mukey"):
+            return [{"mukey": m} for m in sorted({m for _, m, _ in polys})]
+        if sql.startswith("SELECT mu.mukey"):
+            return [{"mukey": k, **v} for k, v in units.items()]
+        keys = sql.split("mukey IN (")[1].split(")")[0].split(",")
+        return [{"mupolygonkey": k, "mukey": m, "wkt": w} for k, m, w in polys if str(m) in keys]
+    return query
+
+
+def _wkt(x0, y0, x1, y1):
+    return f"POLYGON (({x0} {y0}, {x1} {y0}, {x1} {y1}, {x0} {y1}, {x0} {y0}))"
+
+
+SDA_UNITS = {"1": {"musym": "1", "muname": "Wet loam", "hydclprs": "96", "wtdepannmin": "15", "hydgrpdcd": "C/D",
+                   "drclassdcd": "Poorly drained"},
+             "2": {"musym": "2", "muname": "Dry sand", "hydclprs": "0", "wtdepannmin": "153", "hydgrpdcd": "A",
+                   "drclassdcd": "Well drained"}}
+SDA_POLYS = [(11, "1", _wkt(-76.005, 36.803, -76.0035, 36.807)),   # west quarter of parcel 1489...
+             (12, "2", _wkt(-76.0035, 36.803, -76.0, 36.807))]
+
+
+def test_usda_soils_complete_load_and_derived_shares(measured, monkeypatch):
+    monkeypatch.setattr(lc_s, "sda_query", _sda_stub(SDA_POLYS, SDA_UNITS, count=3))
+    assert lc_s.main(["--layer", "usda_soils"]) == 3  # 3 counted, 2 received: nothing written
+    with db_module.db_readonly(measured["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM constraint_loads WHERE layer_key = 'usda_soils'").fetchone()[0] == 0
+    monkeypatch.setattr(lc_s, "sda_query", _sda_stub(SDA_POLYS, SDA_UNITS))
+    assert lc_s.main(["--layer", "usda_soils"]) == 0
+    assert tag_s.main(["--all"]) == 0
+    r = _rows(measured)[("14892864850000", "usda_soils")]
+    d = json.loads(r["detail_json"])
+    assert d["shallow_water_table"]["share"] == 0.25 and d["hydric"]["share"] == 0.25
+    assert [b["name"] for b in d["by"]] == ["Dry sand", "Wet loam"]
+    fact = C.describe("usda_soils", r)
+    assert "Water table within 18 in" in fact and "(25%)" in fact
+    with db_module.db_readonly(measured["db"]) as conn:
+        assert "USDA survey version 9/11/2026" in conn.execute(
+            "SELECT where_clause FROM constraint_loads WHERE layer_key = 'usda_soils'").fetchone()[0]
+        assert C.csv_summary(conn, ["14892864850000"])["hydric_share"] == 0.25

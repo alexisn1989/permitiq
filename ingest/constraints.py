@@ -2,8 +2,15 @@
 per parcel (screening estimates, never a determination).
 
   polygon_share  acres and share of the parcel inside the layer's polygons
+                 (optionally: distance to the nearest polygon within near_ft)
   line_crossing  length of the layer's lines inside the parcel, and the
-                 distance from the parcel to the nearest line
+                 distance to the nearest line within near_ft, with that
+                 line's allowlisted attributes (e.g. a VDOT count's ADT)
+  point_near     distance to the nearest point within near_ft, with its
+                 attributes
+
+Sources: the city's GIS, USFWS NWI, NPS National Register, VDOT (ArcGIS
+services, read complete by OBJECTID) and USDA Soil Data Access (ingest/sda.py).
 
 The Chesapeake Bay RPA layer is a line layer: profiled on the real data
 (2026-10-28) its 2,060 untyped lines are the RPA boundary, not closed buffer
@@ -33,24 +40,38 @@ from ingest.flood import polygonal
 FT_PER_DEG = 364_567.2  # feet per degree of latitude
 COS0 = math.cos(math.radians(36.8))  # Virginia Beach
 SQFT_PER_ACRE = 43_560
-NEAR_FT = 100  # a line within this distance of a parcel is reported as near
+NEAR_FT = 100  # default: a line within this distance of a parcel is reported as near
+# Thresholds (from the user or a source; never invented): shallow water table under 46 cm (18 in, the
+# user's figure); hydric map unit when at least half its components are hydric (hydclprs >= 50).
+WATER_TABLE_CM = 46
+HYDRIC_MIN_PCT = 50
+# Virginia Beach, generously: area filter for national layers (parcels decide what is measured)
+VB_ENVELOPE = {"geometry": '{"xmin":-76.23,"ymin":36.54,"xmax":-75.86,"ymax":36.95,"spatialReference":{"wkid":4326}}',
+               "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
 
 ENV = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/Environmental/MapServer"
 PLAN = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/Planning_and_Development/MapServer"
 UTIL = "https://geo.vbgov.com/mapservices/rest/services/Public_Utilities/Other_Utility_Information/MapServer"
+NWI = "https://fwspublicservices.wim.usgs.gov/wetlandsmapservice/rest/services/Wetlands/MapServer"
+NRHP = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer"
+VDOT = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services"
 
 
 @dataclass(frozen=True)
 class Layer:
     key: str
     url: str
-    kind: str  # polygon_share | line_crossing
+    kind: str  # polygon_share | line_crossing | point_near
     label: str
     meaning: str
     attrs: tuple[str, ...] = field(default_factory=tuple)  # source fields kept; nothing else is stored
     group_by: str | None = None  # an attribute to break the overlap down by (e.g. soil type)
     classification: bool = False  # covers the whole city (soils): report what is mapped, not "inside the layer"
-    near_ft: float | None = None  # polygon layers: also report the distance to the nearest polygon within this
+    near_ft: float | None = None  # distance searched for the nearest feature (lines default to NEAR_FT)
+    where: str = "1=1"
+    bbox: bool = False  # filter the source to the Virginia Beach envelope
+    source: str = "arcgis"  # arcgis | sda
+    fmt: str | None = None  # how the nearest feature is described, from its allowlisted attributes
 
 
 LAYERS = {l.key: l for l in (
@@ -65,9 +86,6 @@ LAYERS = {l.key: l for l in (
     Layer("shrink_swell_soils", f"{ENV}/4", "polygon_share", "Shrink-swell soils",
           "Soils that expand and shrink with moisture: foundation design and earthwork cost.",
           ("SOIL_NAME", "SOIL_DESCR", "SOIL_TYPE"), "SOIL_NAME"),
-    Layer("soils", f"{ENV}/6", "polygon_share", "Soils (city soil survey)",
-          "Soil map units from the city's soil survey. Hydric rating and depth to water table are not in this "
-          "layer.", ("SOIL_NAME", "SOIL_DESCR", "SOIL_TYPE"), "SOIL_NAME", classification=True),
     Layer("historic_overlay", f"{PLAN}/24", "polygon_share", "Historic and Cultural Overlay District",
           "Work needs Historical Review Board review in addition to the standard process.", ("Name",), "Name"),
     Layer("historic_kempsville", f"{PLAN}/25", "polygon_share", "Historic Kempsville Area Overlay District",
@@ -89,6 +107,40 @@ LAYERS = {l.key: l for l in (
     Layer("dam_break", f"{PLAN}/23", "polygon_share", "Dam break inundation zone",
           "Mapped inundation area if a dam fails (state dam-safety rules can limit development).",
           ("NAME", "HAZARD_LEVEL"), "NAME"),
+    # USDA SSURGO, survey area VA810 (replaces the city's older soil map: 2 of its 45 units are no longer in
+    # the current survey). Screening at ~1:12,000 -- not a substitute for borings.
+    Layer("usda_soils", "VA810", "polygon_share", "Soils (USDA soil survey)",
+          f"USDA soil map units. Shallow water table: minimum annual depth under {WATER_TABLE_CM} cm (18 in). "
+          f"Hydric: map unit at least {HYDRIC_MIN_PCT}% hydric components. Mapped at ~1:12,000; not a "
+          "substitute for borings.", ("mukey", "musym", "muname", "hydclprs", "wtdepannmin", "hydgrpdcd",
+                                      "drclassdcd"), "muname", classification=True, source="sda"),
+    Layer("nwi_wetlands", f"{NWI}/0", "polygon_share", "Mapped wetlands (USFWS National Wetlands Inventory)",
+          "Wetlands mapped from imagery by USFWS. Not a jurisdictional delineation: a wetland delineation "
+          "decides what is regulated.", ("ATTRIBUTE", "WETLAND_TYPE"), "WETLAND_TYPE", bbox=True),
+    Layer("nrhp_polygons", f"{NRHP}/1", "polygon_share", "National Register of Historic Places property",
+          "Listed property boundary (NPS). Many boundaries are approximate (circumscribed); federally funded or "
+          "permitted work triggers Section 106 review.", ("RESNAME", "NRIS_Refnum", "ResType", "BND_TYPE"),
+          "RESNAME", where="County = 'Virginia Beach'"),
+    Layer("nrhp_points", f"{NRHP}/0", "point_near", "National Register of Historic Places site",
+          "Listed site location (NPS point, not a boundary).", ("RESNAME", "NRIS_Refnum", "ResType"),
+          near_ft=500, where="County = 'Virginia Beach'", fmt="{RESNAME} ({ResType})"),
+    Layer("vdot_adt", f"{VDOT}/VDOT_Bidirectional_Traffic_Volume_2025/FeatureServer/0", "line_crossing",
+          "VDOT traffic count (ADT)", "Annual average daily traffic on the nearest VDOT-counted segment within "
+          "300 ft (counted routes only; local streets often have no count). Quality code as published by VDOT.",
+          ("ROUTE_COMMON_NAME", "ADT", "ADT_QUALITY", "DATA_DATE", "START_LABEL", "END_LABEL"), near_ft=300,
+          where="FROM_JURISDICTION LIKE '%Virginia Beach%' OR TO_JURISDICTION LIKE '%Virginia Beach%'",
+          fmt="{ROUTE_COMMON_NAME}: ADT {ADT} ({DATA_DATE}, quality code {ADT_QUALITY})"),
+    Layer("vdot_syip_lines", f"{VDOT}/SYIP_Approved_Projects/FeatureServer/1", "line_crossing",
+          "VDOT Six-Year Improvement Program project", "Approved SYIP project within 1,000 ft (the state's "
+          "funded road program).", ("UPC", "DESCRIPTION", "SCOPE_OF_WORK_DESC", "CN_START_DATE",
+                                    "TOTAL_ALLOCATIONS_CURRENT"), near_ft=1000,
+          where="JURISDICTION_DESC LIKE '%Virginia Beach%'",
+          fmt="UPC {UPC} {DESCRIPTION} ({SCOPE_OF_WORK_DESC}; construction start {CN_START_DATE})"),
+    Layer("vdot_syip_points", f"{VDOT}/SYIP_Approved_Projects/FeatureServer/0", "point_near",
+          "VDOT Six-Year Improvement Program project (point)", "Approved SYIP project located at a point, within "
+          "1,000 ft.", ("UPC", "DESCRIPTION", "SCOPE_OF_WORK_DESC", "CN_START_DATE", "TOTAL_ALLOCATIONS_CURRENT"),
+          near_ft=1000, where="JURISDICTION_DESC LIKE '%Virginia Beach%'",
+          fmt="UPC {UPC} {DESCRIPTION} ({SCOPE_OF_WORK_DESC}; construction start {CN_START_DATE})"),
 )}
 
 BOARD_LAYERS = {
@@ -104,11 +156,15 @@ def to_feet(geom):
 
 
 def keep_attrs(layer: Layer, props: dict) -> dict:
+    """Only the layer's allowlisted fields; epoch-millisecond DATE fields as YYYY-MM-DD."""
+    from datetime import datetime, timezone
     out = {}
     for name in layer.attrs:
         v = next((v for k, v in (props or {}).items() if k.upper() == name.upper()), None)
         if isinstance(v, str):
             v = v.strip() or None
+        if "DATE" in name.upper() and isinstance(v, (int, float)) and v > 1e11:
+            v = datetime.fromtimestamp(v / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
         out[name] = v
     return out
 
@@ -125,6 +181,8 @@ def normalize(layer: Layer, features: list[dict], stats) -> list[dict]:
         geom = shape(g)
         if layer.kind == "polygon_share":
             geom = polygonal(geom)
+        elif layer.kind == "point_near":
+            geom = geom if geom.geom_type in ("Point", "MultiPoint") else None
         elif geom.geom_type not in ("LineString", "MultiLineString"):
             geom = None
         if geom is None or geom.is_empty:
@@ -160,7 +218,7 @@ class LayerIndex:
 
     def measure(self, parcel_geom) -> dict | None:
         """The parcel's measurement for this layer, or None when it does not touch
-        it (and, for lines, no line is within NEAR_FT)."""
+        it and no feature is within the layer's search distance."""
         if self.tree is None:
             return None
         p = to_feet(parcel_geom)
@@ -173,25 +231,33 @@ class LayerIndex:
                 return self._nearest(p) if self.layer.near_ft else None
             detail = {}
             if self.layer.group_by:
-                by: dict[str, float] = {}
+                by: dict[str, list] = {}
                 for i in hits:
                     part = self.ft[i].intersection(p).area
                     if part > 0:
                         k = self.rows[i]["attrs"].get(self.layer.group_by) or "unnamed"
-                        by[k] = by.get(k, 0.0) + part
-                detail["by"] = [{"name": k, "acres": round(v / SQFT_PER_ACRE, 3), "share": round(v / area, 4)}
-                                for k, v in sorted(by.items(), key=lambda kv: -kv[1])]
+                        by.setdefault(k, [0.0, self.rows[i]["attrs"]])[0] += part
+                detail["by"] = [{"name": k, "acres": round(v / SQFT_PER_ACRE, 3), "share": round(v / area, 4),
+                                 **({"attrs": a} if self.layer.source == "sda" else {})}
+                                for k, (v, a) in sorted(by.items(), key=lambda kv: -kv[1][0])]
+                if self.layer.source == "sda":
+                    detail.update(soil_summary(detail["by"]))
             return {"overlap_sqft": round(overlap, 1), "share": round(min(1.0, overlap / area), 4),
                     "line_length_ft": None, "distance_ft": None, "detail": detail}
-        near = [i for i in self.tree.query(p, predicate="dwithin", distance=NEAR_FT)]
+        reach = self.layer.near_ft or NEAR_FT
+        near = list(self.tree.query(p, predicate="dwithin", distance=reach))
         if not near:
             return None
-        lines = union_all([self.ft[i] for i in near])
-        inside = lines.intersection(p).length
-        dist = 0.0 if inside > 0 else p.distance(lines)
+        dist = {i: p.distance(self.ft[i]) for i in near}
+        closest = min(dist, key=lambda i: (dist[i], i))
+        detail = {"nearest": self.rows[closest]["attrs"]} if self.layer.attrs else {}
+        if self.layer.kind == "point_near":
+            detail["within"] = len(near)
+            return {"overlap_sqft": None, "share": None, "line_length_ft": None,
+                    "distance_ft": round(dist[closest], 1), "detail": detail}
+        inside = union_all([self.ft[i] for i in near]).intersection(p).length
         return {"overlap_sqft": None, "share": None, "line_length_ft": round(inside, 1),
-                "distance_ft": round(dist, 1), "detail": {}}
-
+                "distance_ft": 0.0 if inside > 0 else round(dist[closest], 1), "detail": detail}
 
     def _nearest(self, p) -> dict | None:
         """No overlap: the distance to the nearest polygon within the layer's near_ft."""
@@ -199,9 +265,19 @@ class LayerIndex:
         if not near:
             return None
         d = {i: p.distance(self.ft[i]) for i in near}
-        i = min(d, key=d.get)
+        i = min(d, key=lambda j: (d[j], j))
         return {"overlap_sqft": None, "share": 0.0, "line_length_ft": None, "distance_ft": round(d[i], 1),
-                "detail": {"nearest": self.rows[i]["attrs"].get(self.layer.group_by) if self.layer.group_by else None}}
+                "detail": {"nearest": self.rows[i]["attrs"]}}
+
+
+def soil_summary(by: list[dict]) -> dict:
+    """Shallow water table and hydric shares of the parcel from its soil map units."""
+    def total(pred):
+        sel = [b for b in by if pred(b["attrs"])]
+        return {"acres": round(sum(b["acres"] for b in sel), 3), "share": round(sum(b["share"] for b in sel), 4)}
+    return {"shallow_water_table": total(lambda a: a.get("wtdepannmin") is not None
+                                         and a["wtdepannmin"] < WATER_TABLE_CM),
+            "hydric": total(lambda a: a.get("hydclprs") is not None and a["hydclprs"] >= HYDRIC_MIN_PCT)}
 
 
 def load_layer_index(conn, layer: Layer) -> tuple[int, LayerIndex] | None:
@@ -216,22 +292,51 @@ def load_layer_index(conn, layer: Layer) -> tuple[int, LayerIndex] | None:
     return load["load_id"], LayerIndex(layer, rows)
 
 
+def _fmt(layer: Layer, attrs: dict | None) -> str:
+    if not layer.fmt or not attrs:
+        return ""
+    vals = {}
+    for k, v in attrs.items():
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and k.upper() in ("ADT", "TOTAL_ALLOCATIONS_CURRENT"):
+            v = f"{v:,.0f}"
+        vals[k] = "n/a" if v is None else v
+    try:
+        return layer.fmt.format(**vals)
+    except (KeyError, ValueError):
+        return ""
+
+
 def describe(layer_key: str, row: dict) -> str:
     """One measured fact, in plain words."""
     layer = LAYERS[layer_key]
+    detail = json.loads(row["detail_json"]) if isinstance(row.get("detail_json"), str) else (row.get("detail") or {})
     if layer.classification:
-        by = json.loads(row.get("detail_json") or "{}").get("by", []) if isinstance(row.get("detail_json"), str) \
-            else (row.get("detail") or {}).get("by", [])
-        parts = [f"{b['name']} {b['acres']:,.2f} ac ({b['share'] * 100:.0f}%)" for b in by[:4]]
-        return "Mapped: " + "; ".join(parts) if parts else "mapped"
+        parts = [f"{b['name']} {b['acres']:,.2f} ac ({b['share'] * 100:.0f}%)" for b in detail.get("by", [])[:4]]
+        text = "Mapped: " + "; ".join(parts) if parts else "mapped"
+        if layer.source == "sda":
+            wt, hy = detail.get("shallow_water_table", {}), detail.get("hydric", {})
+            text += (f". Water table within 18 in: {wt.get('acres', 0):,.2f} ac ({wt.get('share', 0) * 100:.0f}%)"
+                     f"; hydric map units (>= {HYDRIC_MIN_PCT}%): {hy.get('acres', 0):,.2f} ac "
+                     f"({hy.get('share', 0) * 100:.0f}%)")
+        return text
+    what = _fmt(layer, detail.get("nearest"))
+    if layer.kind == "point_near":
+        n = detail.get("within", 1)
+        return (f"{layer.label} {row['distance_ft']:,.0f} ft from the parcel" + (f": {what}" if what else "")
+                + (f" ({n} within {layer.near_ft:,.0f} ft)" if n > 1 else ""))
     if layer.kind == "line_crossing":
         if row["line_length_ft"]:
-            return f"{layer.label} crosses the parcel ({row['line_length_ft']:,.0f} ft of line inside it)"
-        return f"{layer.label} lies {row['distance_ft']:,.0f} ft from the parcel"
+            return (f"{layer.label} crosses the parcel ({row['line_length_ft']:,.0f} ft inside it)"
+                    + (f": {what}" if what else ""))
+        return f"{layer.label} lies {row['distance_ft']:,.0f} ft from the parcel" + (f": {what}" if what else "")
     if not row["overlap_sqft"]:
-        return f"{layer.label} {row['distance_ft']:,.0f} ft from the parcel"
+        return f"{layer.label} {row['distance_ft']:,.0f} ft from the parcel" + (f": {what}" if what else "")
     acres = row["overlap_sqft"] / SQFT_PER_ACRE
-    return f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the {layer.label.lower()}"
+    text = f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the {layer.label[0].lower() + layer.label[1:]}"
+    if layer.key == "nrhp_polygons":
+        b = (detail.get("by") or [{}])[0]
+        text += f": {b.get('name', '')}"
+    return text
 
 
 def public_constraints(conn, gpins: list[str]) -> dict:
@@ -277,16 +382,17 @@ def public_constraints(conn, gpins: list[str]) -> dict:
                            if k in LAYERS],
         "boards_checked": [{"board": k, "label": BOARD_LAYERS[k][1], "as_of": v} for k, v in sorted(boards.items())
                            if k in BOARD_LAYERS],
-        "not_covered": ["sewer / water capacity and pipe locations (not published)", "hydric soils and water table (USDA, pending)",
-                        "NWI wetlands (pending)", "VDOT traffic (pending)", "state / National Register historic "
-                        "boundaries (pending)"],
-        "notice": "Screening estimates from the city's GIS layers, not a determination: confirm with a site survey "
-                  "and the city's RPA / wetlands determination. Names of private individuals are not shown.",
+        "not_covered": ["sewer / water capacity and pipe locations (not published)",
+                        "Virginia Landmarks Register (state DHR service unreachable)"],
+        "notice": "Screening estimates from public GIS layers (city, USDA, USFWS, NPS, VDOT), not a determination: "
+                  "confirm with a site survey, a wetland delineation and the city's RPA determination. Names of "
+                  "private individuals are not shown.",
     }
 
 
 CSV_COLUMNS = ("rpa", "southern_watersheds_buffer_share", "special_floodplain_share", "shrink_swell_share",
-               "sewer_pump_station_project_ft", "utility_project_area",
+               "nwi_wetland_share", "shallow_water_table_share", "hydric_share", "nrhp", "nearest_adt",
+               "syip_within_ft", "sewer_pump_station_project_ft", "utility_project_area",
                "historic_overlay", "dam_break", "prior_cbpa_actions", "prior_wetlands_board_actions",
                "prior_hrb_actions")
 
@@ -300,9 +406,21 @@ def csv_summary(conn, gpins: list[str]) -> dict:
         return out
     marks = ",".join("?" * len(gpins))
     best: dict[str, dict] = {}
-    for r in conn.execute(f"SELECT layer_key, share, line_length_ft, distance_ft FROM parcel_constraints_effective "
-                          f"WHERE gpin IN ({marks})", gpins):
+    near: dict[str, dict] = {}
+    for r in conn.execute(f"SELECT layer_key, share, line_length_ft, distance_ft, detail_json "
+                          f"FROM parcel_constraints_effective WHERE gpin IN ({marks})", gpins):
         k = r["layer_key"]
+        if k == "usda_soils":
+            d = json.loads(r["detail_json"])
+            for col, part in (("shallow_water_table_share", "shallow_water_table"), ("hydric_share", "hydric")):
+                v = d.get(part, {}).get("share")
+                if v is not None and (out[col] == "" or v > out[col]):
+                    out[col] = round(v, 4)
+            continue
+        if k in ("vdot_adt", "vdot_syip_lines", "vdot_syip_points", "nrhp_points") and r["distance_ft"] is not None:
+            if k not in near or r["distance_ft"] < near[k]["distance_ft"]:
+                near[k] = {"distance_ft": r["distance_ft"], "detail": json.loads(r["detail_json"])}
+            continue
         if k == "rpa":
             cur = best.get(k)
             if cur is None or (r["distance_ft"] or 0) < (cur["distance_ft"] or 0):
@@ -318,8 +436,19 @@ def csv_summary(conn, gpins: list[str]) -> dict:
     if "rpa" in best:
         b = best["rpa"]
         out["rpa"] = "crosses" if b["line_length_ft"] else f"within {b['distance_ft']:.0f} ft"
+    if "vdot_adt" in near:
+        a = near["vdot_adt"]["detail"].get("nearest") or {}
+        out["nearest_adt"] = f"{a.get('ADT')} ({a.get('ROUTE_COMMON_NAME')}, {near['vdot_adt']['distance_ft']:.0f} ft)"
+    syip = [near[k]["distance_ft"] for k in ("vdot_syip_lines", "vdot_syip_points") if k in near]
+    if syip:
+        out["syip_within_ft"] = round(min(syip))
+    if "nrhp_polygons" in best:
+        out["nrhp"] = "inside a listed property"
+    elif "nrhp_points" in near:
+        out["nrhp"] = f"listed site {near['nrhp_points']['distance_ft']:.0f} ft"
     for col, key in (("southern_watersheds_buffer_share", "southern_watersheds_buffer"),
-                     ("special_floodplain_share", "special_floodplain"), ("shrink_swell_share", "shrink_swell_soils")):
+                     ("special_floodplain_share", "special_floodplain"), ("shrink_swell_share", "shrink_swell_soils"),
+                     ("nwi_wetland_share", "nwi_wetlands")):
         if key in best:
             out[col] = round(best[key]["share"], 4)
     for col, keys in (("historic_overlay", ("historic_overlay", "historic_kempsville")), ("dam_break", ("dam_break",))):

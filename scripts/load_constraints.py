@@ -25,16 +25,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
-from ingest import arcgis, constraints as C  # noqa: E402
+from ingest import arcgis, constraints as C, sda  # noqa: E402
 from ingest.common import fetch_json_retry  # noqa: E402
 
 fetch_json = fetch_json_retry  # indirection so tests can stub the network
-EXPECTED_GEOMETRY = {"polygon_share": "esriGeometryPolygon", "line_crossing": "esriGeometryPolyline"}
+EXPECTED_GEOMETRY = {"polygon_share": ("esriGeometryPolygon",), "line_crossing": ("esriGeometryPolyline",),
+                     "point_near": ("esriGeometryPoint", "esriGeometryMultipoint")}
+sda_query = sda.post  # indirection so tests can stub Soil Data Access
 
 
 def check_layer(layer: C.Layer) -> dict:
     meta = fetch_json(layer.url, {"f": "json"})
-    if meta.get("geometryType") != EXPECTED_GEOMETRY[layer.kind]:
+    if meta.get("geometryType") not in EXPECTED_GEOMETRY[layer.kind]:
         raise C_Error(f"{layer.key}: {layer.url} has geometryType {meta.get('geometryType')!r}, expected "
                       f"{EXPECTED_GEOMETRY[layer.kind]} -- wrong layer number?")
     fields = {f.get("name", "").upper() for f in meta.get("fields", [])}
@@ -48,16 +50,31 @@ class C_Error(Exception):
     pass
 
 
-def load_one(conn, layer: C.Layer, dry_run: bool) -> str:
-    meta = check_layer(layer)
+def read_layer(layer: C.Layer) -> tuple[list[dict], int, int, str, Counter]:
+    """(rows, expected, unique ids, where_clause as recorded, stats) -- complete or an exception."""
     stats: Counter = Counter()
-    raw = arcgis.fetch_all_by_ids(fetch_json, layer.url, "1=1", label=layer.key,
+    if layer.source == "sda":
+        rows, info = sda.polygons(layer.url, sda_query)
+        rows = [{**r, "geom": C.polygonal(r["geom"])} for r in rows]
+        stats["unusable_geometry"] = sum(1 for r in rows if r["geom"] is None or r["geom"].is_empty)
+        rows = [r for r in rows if r["geom"] is not None and not r["geom"].is_empty]
+        where = f"areasymbol = '{layer.url}' (USDA survey version {info['version']})"
+        return rows, info["expected"], info["received"], where, stats
+    meta = check_layer(layer)
+    extra = C.VB_ENVELOPE if layer.bbox else None
+    raw = arcgis.fetch_all_by_ids(fetch_json, layer.url, layer.where, label=layer.key, extra=extra,
                                   oid_field=meta.get("objectIdField") or "OBJECTID")
-    rows = C.normalize(layer, raw, stats)
+    where = layer.where + (" AND inside the Virginia Beach envelope" if layer.bbox else "")
+    return C.normalize(layer, raw, stats), len(raw), len({arcgis.feature_id(f) for f in raw}), where, stats
+
+
+def load_one(conn, layer: C.Layer, dry_run: bool) -> str:
+    rows, expected, unique, where, stats = read_layer(layer)
+    stats = +stats
     if not rows:
         raise C_Error(f"{layer.key}: no usable features; nothing written")
     h = C.content_hash(rows)
-    print(f"{layer.key}: {len(raw)} features read, {len(rows)} usable {dict(stats) or ''}")
+    print(f"{layer.key}: {expected} features read, {len(rows)} usable {dict(stats) or ''}")
     if dry_run:
         return "dry-run"
     active = conn.execute("SELECT load_id, content_hash FROM constraint_loads WHERE layer_key = ? AND is_active = 1",
@@ -68,8 +85,8 @@ def load_one(conn, layer: C.Layer, dry_run: bool) -> str:
     conn.execute("UPDATE constraint_loads SET is_active = 0 WHERE layer_key = ? AND is_active = 1", (layer.key,))
     load_id = conn.execute(
         "INSERT INTO constraint_loads (layer_key, source_url, where_clause, expected_count, received_count, "
-        "unique_ids, features, content_hash, loaded_at, is_active) VALUES (?, ?, '1=1', ?, ?, ?, ?, ?, ?, 1)",
-        (layer.key, layer.url, len(raw), len(raw), len({arcgis.feature_id(f) for f in raw}), len(rows), h,
+        "unique_ids, features, content_hash, loaded_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (layer.key, sda.URL if layer.source == "sda" else layer.url, where, expected, expected, unique, len(rows), h,
          db_module.now_iso())).lastrowid
     conn.executemany(
         "INSERT INTO constraint_features (load_id, feature_id, geom_geojson, minx, miny, maxx, maxy, attrs_json) "
@@ -91,9 +108,13 @@ def main(argv=None) -> int:
     if args.inspect:
         for k in keys:
             layer = C.LAYERS[k]
+            if layer.source == "sda":
+                print(f"{k}: USDA Soil Data Access, survey area {layer.url}")
+                continue
             try:
                 meta = fetch_json(layer.url, {"f": "json"})
-                n = fetch_json(f"{layer.url}/query", {"where": "1=1", "returnCountOnly": "true", "f": "json"})["count"]
+                n = fetch_json(f"{layer.url}/query", {"where": layer.where, **(C.VB_ENVELOPE if layer.bbox else {}),
+                                                      "returnCountOnly": "true", "f": "json"})["count"]
             except (RuntimeError, KeyError) as e:
                 print(f"{k}: [error] {e}")
                 continue
@@ -105,7 +126,7 @@ def main(argv=None) -> int:
         try:
             with db_module.db() as conn:  # one transaction per layer: a failed layer leaves the others loaded
                 load_one(conn, C.LAYERS[k], args.dry_run)
-        except (arcgis.IncompleteRead, C_Error, RuntimeError, ValueError) as e:
+        except (arcgis.IncompleteRead, sda.SdaIncomplete, C_Error, RuntimeError, ValueError, OSError) as e:
             failed.append(k)
             print(f"[error] {k}: {e}; nothing written for this layer", file=sys.stderr)
     if failed:
