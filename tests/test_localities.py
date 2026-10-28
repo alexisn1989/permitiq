@@ -72,7 +72,7 @@ def test_v12_to_v13_migration_keeps_virginia_beach_results(flooded):
     conn.commit()
     conn.close()
     db_module.init_db(flooded["db"])
-    assert db_module.schema_version(flooded["db"]) == 13
+    assert db_module.schema_version(flooded["db"]) == db_module.SCHEMA_VERSION
     assert _snapshot(flooded["db"]) == before
     with db_module.db_readonly(flooded["db"]) as c:
         assert {r[0] for r in c.execute("SELECT locality FROM parcel_loads")} == {"virginia_beach"}

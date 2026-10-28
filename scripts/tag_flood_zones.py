@@ -97,6 +97,10 @@ def main(argv=None) -> int:
         ).fetchall()
         for scope in scopes:
             locality, load_id = scope["locality"], scope["load_id"]
+            n_permits = conn.execute("SELECT COUNT(*) FROM permits WHERE locality = ?", (locality,)).fetchone()[0]
+            if not n_permits and not (args.decisions and locality == "virginia_beach"):
+                print(f"{locality}: no permits to tag (none published or ingested); skipped")
+                continue
             if load_id is None:
                 print(f"[FATAL] {locality}: no active flood load for DFIRM {scope['dfirm_id']}; "
                       "run scripts/load_flood_zones.py first", file=sys.stderr)

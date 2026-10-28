@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1664,6 +1664,106 @@ def _schema_v13(conn) -> None:
     _localize_views(conn)
 
 
+# Schema v14 (Chesapeake as a "pipeline city"). Chesapeake publishes no building
+# permits; it publishes its land-use cases (Development Tracking) with Planning
+# Commission / City Council actions coded by the city's own domain, development
+# plans and right-of-way permits. Cases and records are loaded complete-only,
+# one active load per (locality, source); records are kept out of `permits`.
+CASE_STAGES = ("approved", "denied", "withdrawn", "pending", "incomplete", "other")
+_SCHEMA_V14_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS city_record_loads (
+        load_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        locality        TEXT NOT NULL,
+        source          TEXT NOT NULL,
+        source_url      TEXT NOT NULL,
+        expected_count  INTEGER NOT NULL,
+        received_count  INTEGER NOT NULL,
+        unique_ids      INTEGER NOT NULL,
+        records         INTEGER NOT NULL,
+        content_hash    TEXT NOT NULL,
+        domain_json     TEXT NOT NULL DEFAULT '{}',
+        parcel_load_id  INTEGER,
+        loaded_at       TEXT NOT NULL,
+        is_active       INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+        CHECK (is_active = 0 OR (expected_count = received_count AND received_count = unique_ids))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_city_record_loads_active ON city_record_loads(locality, source) "
+    "WHERE is_active = 1",
+    f"""
+    CREATE TABLE IF NOT EXISTS land_use_cases (
+        load_id          INTEGER NOT NULL REFERENCES city_record_loads(load_id),
+        locality         TEXT NOT NULL,
+        case_id          TEXT NOT NULL,
+        object_ids_json  TEXT NOT NULL,
+        case_type        TEXT,
+        project          TEXT,
+        address          TEXT,
+        parcel_ids_json  TEXT NOT NULL DEFAULT '[]',
+        housing_units    INTEGER,
+        residential      TEXT,
+        zoning_from      TEXT,
+        zoning_to        TEXT,
+        applied_date     TEXT,
+        year_applied     INTEGER,
+        staff_rec        TEXT,
+        pc_action        TEXT,
+        pc_date          TEXT,
+        cc_action        TEXT,
+        cc_date          TEXT,
+        arc_action       TEXT,
+        arc_date         TEXT,
+        final_raw        TEXT,
+        stage            TEXT NOT NULL CHECK (stage IN ({",".join(repr(x) for x in CASE_STAGES)})),
+        final_date       TEXT,
+        planner          TEXT,
+        notes            TEXT,
+        legacy           INTEGER NOT NULL DEFAULT 0,
+        source_link      TEXT,
+        geom_geojson     TEXT,
+        minx REAL, miny REAL, maxx REAL, maxy REAL, lat REAL, lng REAL,
+        gpins_json       TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (load_id, case_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_land_use_cases_stage ON land_use_cases(locality, stage)",
+    """
+    CREATE TABLE IF NOT EXISTS development_records (
+        load_id        INTEGER NOT NULL REFERENCES city_record_loads(load_id),
+        locality       TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        record_id      TEXT NOT NULL,
+        object_ids_json TEXT NOT NULL,
+        record_type    TEXT,
+        project_type   TEXT,
+        status         TEXT,
+        details        TEXT,
+        organization   TEXT,
+        address        TEXT,
+        submitted_date TEXT,
+        approved_date  TEXT,
+        expires_date   TEXT,
+        parcel_ids_json TEXT NOT NULL DEFAULT '[]',
+        lat REAL, lng REAL,
+        gpins_json     TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (load_id, record_id)
+    )
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS land_use_cases_effective AS
+    SELECT c.*, l.loaded_at, l.source_url FROM land_use_cases c
+    JOIN city_record_loads l ON l.load_id = c.load_id AND l.is_active = 1
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS development_records_effective AS
+    SELECT r.*, l.loaded_at, l.source_url FROM development_records r
+    JOIN city_record_loads l ON l.load_id = r.load_id AND l.is_active = 1
+    """,
+    "INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('chesapeake', '510034')",
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1726,6 +1826,9 @@ def init_db(db_path: Path | str | None = None) -> None:
                 conn.execute(statement)
         if current_version < 13:
             _schema_v13(conn)
+        if current_version < 14:
+            for statement in _SCHEMA_V14_STATEMENTS:
+                conn.execute(statement)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
                      "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")
