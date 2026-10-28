@@ -63,6 +63,10 @@ EXTRACTS = {
         s.n_council_candidates, i.warnings_json FROM pc_items i JOIN pc_item_status s ON s.item_key = i.item_key
         ORDER BY i.meeting_date, i.item_key""",
     "pc_council_candidates": "SELECT * FROM pc_council_candidates ORDER BY item_key, decision_key",
+    # no applicant or project names (they include private individuals); the layer is public at its URL
+    "filings": """SELECT f.pln_id, f.date_sub, f.pln_type, f.gpins_json, s.pc_status, s.hearing_date,
+        s.n_council_candidates, s.permits_after_filing FROM filings f JOIN filing_status s ON s.pln_id = f.pln_id
+        ORDER BY f.date_sub""",
     "review_audit": """SELECT audit_id, import_id, review_table, subject_json, action, old_json, new_json,
         review_author, recorded_at FROM review_audit ORDER BY audit_id""",
     "review_imports": """SELECT import_id, kind, source_file, source_sha256, derived_file, derived_sha256,

@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1293,6 +1293,72 @@ _SCHEMA_V9_STATEMENTS = [
 ]
 
 
+# Schema v10 (filing-date leads, Virginia Beach). The city's "Planning Commission
+# and City Council Actions" layer maps every land-use application with its
+# filing date and Accela record. A load activates only when complete (count
+# and OBJECTID set match); polygons sharing an Accela ID become one filing.
+# The layer has no status: a filing's stage comes only from the Planning
+# Commission items that carry its Accela ID -- never "approved".
+_SCHEMA_V10_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS filing_loads (
+        load_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_url      TEXT NOT NULL,
+        where_clause    TEXT NOT NULL,
+        expected_count  INTEGER NOT NULL,
+        received_count  INTEGER NOT NULL,
+        unique_ids      INTEGER NOT NULL,
+        no_date         INTEGER NOT NULL,
+        filings         INTEGER NOT NULL,
+        content_hash    TEXT NOT NULL,
+        max_date_sub    TEXT,
+        parcel_load_id  INTEGER,
+        loaded_at       TEXT NOT NULL,
+        is_active       INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+        CHECK (is_active = 0 OR (expected_count = received_count AND received_count = unique_ids))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_filing_loads_active ON filing_loads(is_active) WHERE is_active = 1",
+    """
+    CREATE TABLE IF NOT EXISTS filings (
+        load_id            INTEGER NOT NULL REFERENCES filing_loads(load_id),
+        pln_id             TEXT NOT NULL,
+        objectids_json     TEXT NOT NULL,
+        date_sub           TEXT NOT NULL,
+        pln_type           TEXT,
+        pln_file_no        TEXT,
+        proj_name          TEXT,
+        appl_name          TEXT,
+        deeplink           TEXT,
+        geom_geojson       TEXT NOT NULL,
+        minx REAL NOT NULL, miny REAL NOT NULL, maxx REAL NOT NULL, maxy REAL NOT NULL,
+        lat REAL NOT NULL, lng REAL NOT NULL,
+        gpins_json         TEXT NOT NULL,
+        PRIMARY KEY (load_id, pln_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_filings_date ON filings(load_id, date_sub)",
+    """
+    CREATE VIEW IF NOT EXISTS filing_status AS
+    SELECT f.pln_id, f.date_sub, f.pln_type,
+           (SELECT i.item_key FROM pc_items i, json_each(i.accela_json) a WHERE a.value = f.pln_id
+            ORDER BY i.meeting_date DESC LIMIT 1) AS pc_item_key,
+           (SELECT s.status FROM pc_items i, json_each(i.accela_json) a
+                JOIN pc_item_status s ON s.item_key = i.item_key
+            WHERE a.value = f.pln_id ORDER BY i.meeting_date DESC LIMIT 1) AS pc_status,
+           (SELECT i.meeting_date FROM pc_items i, json_each(i.accela_json) a WHERE a.value = f.pln_id
+            ORDER BY i.meeting_date DESC LIMIT 1) AS hearing_date,
+           (SELECT COALESCE(SUM(s.n_council_candidates), 0) FROM pc_items i, json_each(i.accela_json) a
+                JOIN pc_item_status s ON s.item_key = i.item_key WHERE a.value = f.pln_id) AS n_council_candidates,
+           (SELECT COUNT(DISTINCT p.id) FROM json_each(f.gpins_json) g
+                JOIN permit_parcel_effective pp ON pp.display_gpin = g.value
+                JOIN permits p ON p.id = pp.permit_id
+            WHERE p.applied_date >= f.date_sub) AS permits_after_filing
+    FROM filings f JOIN filing_loads l ON l.load_id = f.load_id AND l.is_active = 1
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1343,6 +1409,9 @@ def init_db(db_path: Path | str | None = None) -> None:
             _baseline_review_history(conn)
         if current_version < 9:
             for statement in _SCHEMA_V9_STATEMENTS:
+                conn.execute(statement)
+        if current_version < 10:
+            for statement in _SCHEMA_V10_STATEMENTS:
                 conn.execute(statement)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "

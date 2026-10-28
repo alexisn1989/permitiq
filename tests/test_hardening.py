@@ -651,6 +651,8 @@ def _q(**over):
          "planning_commission": {"coverage": {"verified": True, "months_without_agenda": [], "agenda_found": 2,
                                               "months": 2, "minutes_found": 2, "from": "2026-08", "to": "2026-09"},
                                  "items": 3, "items_with_warnings": 0},
+         "filings": {"load": {"expected_count": 5, "received_count": 5, "where_clause": "w", "filings": 4,
+                              "max_date_sub": "2026-10-01"}, "with_parcels": 4},
          "accuracy": {"freshness": "fresh", "results": {
              "links_by_tier": {"gpin_exact": dict(tier), "address": {"population": 4, "adjudicated": 4}},
              "leads": {"population": 10, "adjudicated": 10, "cant_tell": 1},

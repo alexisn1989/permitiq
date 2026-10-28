@@ -194,7 +194,8 @@ def test_service_complete_load_pages_by_object_ids(env, monkeypatch):
     fetch, state = _service("ok")
     monkeypatch.setattr(load_s, "fetch_json", fetch)
     assert load_s.main([]) == 0
-    assert [len(b) for b in state["batches"]] == [2000, 2000, 1000] and state["counts"] == 2
+    # 200 IDs per request: 2,000 made the GET URL too long on the live city layers (400)
+    assert [len(b) for b in state["batches"]] == [200] * 25 and state["counts"] == 2
     with db_module.db_readonly(env["db"]) as conn:
         l = conn.execute("SELECT * FROM parcel_loads").fetchone()
     assert (l["expected_count"], l["received_count"], l["unique_source_ids"]) == (N_SERVICE,) * 3

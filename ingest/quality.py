@@ -270,10 +270,34 @@ def pc_quality(conn) -> dict | None:
     }
 
 
+def filing_quality(conn) -> dict | None:
+    """The active filing load: completeness, stages, and how many Planning Commission
+    agenda records it contains; None if no filing load is active."""
+    load = conn.execute("SELECT * FROM filing_loads WHERE is_active = 1").fetchone()
+    if load is None:
+        return None
+    one = lambda sql, *a: conn.execute(sql, a).fetchone()[0]  # noqa: E731
+    agenda_ids = {r[0] for r in conn.execute(
+        "SELECT DISTINCT a.value FROM pc_items i, json_each(i.accela_json) a WHERE i.city_initiated = 0")}
+    filed_ids = {r[0] for r in conn.execute("SELECT pln_id FROM filings WHERE load_id = ?", (load["load_id"],))}
+    return {
+        "load": {k: load[k] for k in ("where_clause", "expected_count", "received_count", "filings", "no_date",
+                                      "max_date_sub", "loaded_at", "parcel_load_id")},
+        "by_stage": dict(conn.execute("SELECT COALESCE(pc_status, 'filed'), COUNT(*) FROM filing_status GROUP BY 1"
+                                      ).fetchall()),
+        "with_parcels": one("SELECT COUNT(*) FROM filings WHERE load_id = ? AND gpins_json != '[]'", load["load_id"]),
+        "filed_over_6_months_no_hearing": one(
+            "SELECT COUNT(*) FROM filing_status WHERE pc_status IS NULL AND date_sub < date('now', '-6 months')"),
+        "agenda_records": len(agenda_ids),
+        "agenda_records_in_filings": len(agenda_ids & filed_ids),
+    }
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
-            "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn)}
+            "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn),
+            "filings": filing_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -347,6 +371,14 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
             add("Planning Commission coverage verified", not gaps,
                 detail + (f"; months without an agenda: {', '.join(gaps[:12])}{' …' if len(gaps) > 12 else ''}"
                           if gaps else ""))
+    fq = q.get("filings")
+    if fq is None:
+        add("Filing load complete", None, "no filing load active")
+    else:
+        ld = fq["load"]
+        add("Filing load complete", ld["expected_count"] == ld["received_count"],
+            f"{ld['received_count']} of {ld['expected_count']} records ({ld['where_clause']}) -> {ld['filings']} "
+            f"filings; parcels for {fq['with_parcels']}; newest filed {ld['max_date_sub']}")
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

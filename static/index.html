@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="/static/logo-icon.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 
@@ -43,6 +43,11 @@
       <label class="flood-toggle"><input type="checkbox" id="landuse-layer-toggle"> Council land-use decisions</label>
       <button class="legend-item" id="landuse-leads-chip" title="Verified approvals with no candidate permit in the observed permit data">Approved, no permit yet</button>
       <div class="flood-legend" id="landuse-legend"></div>
+    </section>
+
+    <section class="flood-panel" aria-label="Applications filed">
+      <label class="flood-toggle"><input type="checkbox" id="filing-layer-toggle"> Applications filed</label>
+      <div class="flood-legend" id="filing-legend"></div>
     </section>
 
     <section class="flood-panel" aria-label="Planning Commission hearings">
@@ -111,6 +116,6 @@
      and do cache them aggressively. Bump ?v=N (here and on style.css above)
      whenever either file changes, or a returning visitor's old cached copy
      will keep running silently with no error. -->
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

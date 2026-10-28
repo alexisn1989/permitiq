@@ -165,7 +165,51 @@
       <p class="muted small">${esc(it.notice || "")}</p>`;
   }
 
-  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml };
+  const FILING_STAGE_TEXT = Object.assign({ filed: "Filed — outcome not yet known" }, PC_STATUS_TEXT);
+
+  function party(p, what) {
+    if (!p || (!p.name && !p.withheld)) return '<span class="muted">not recorded</span>';
+    return p.name ? esc(p.name) : `<span class="muted">${what} is an individual — name not shown</span>`;
+  }
+
+  // f: GET /api/land-use/filings/{pln_id}. Escaped HTML for the filing lead page.
+  function buildFilingHtml(f) {
+    const parcels = (f.parcels || []).filter((p) => p.gpin).map((p) =>
+      `<tr><td>${esc(p.gpin)}</td><td>${esc(p.zoning || "–")} · ${esc(p.land_use || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td></tr>`).join("");
+    const hearings = (f.pc_items || []).map((i) =>
+      `<li><a href="/static/lead.html?pc=${encodeURIComponent(i.item_key)}">${esc(i.meeting_date)} — ${esc(i.request || "hearing item")}</a> <span class="muted small">(${esc(PC_STATUS_TEXT[i.status] || i.status)})</span></li>`).join("");
+    const permits = (f.permits_on_site || []).map((p) =>
+      `<li>${esc(p.source_permit_id)} · ${esc(p.permit_type || "")} · applied ${esc(p.applied_date)} <span class="muted small">${esc(p.address || "")}</span></li>`).join("");
+    return `
+      <section class="card">
+        <div class="card-head"><h2>${esc(f.plan_type_label)} · ${esc(f.pln_id)}</h2>
+          <span class="status-pill">${esc(FILING_STAGE_TEXT[f.stage] || f.stage)}</span></div>
+        <p class="muted">Application filed ${esc(f.date_sub)}${f.hearing_date ? ` · Planning Commission hearing ${esc(f.hearing_date)}` : ""}</p>
+        <h3>Application</h3>
+        <dl class="facts">
+          <div><dt>Filed</dt><dd>${esc(f.date_sub)}</dd></div>
+          <div><dt>Type</dt><dd>${esc(f.plan_type_label)}${f.pln_type && f.plan_type_label !== f.pln_type ? ` <span class="muted small">(${esc(f.pln_type)})</span>` : ""}</dd></div>
+          <div><dt>Applicant</dt><dd>${party(f.applicant, "The applicant")}</dd></div>
+          <div><dt>Project</dt><dd>${party(f.project, "The project name")}</dd></div>
+          <div><dt>Accela record</dt><dd>${esc(f.pln_id)}${f.deeplink ? `<br>${escLinkify(f.deeplink)}` : ""}</dd></div>
+        </dl>
+        <div id="filing-map" class="mini-map"></div>
+      </section>
+      <section class="card">
+        <h3>Parcels inside the application boundary</h3>
+        ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Zoning · use</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No parcel found inside the boundary.</p>'}
+      </section>
+      <section class="card">
+        <h3>Planning Commission</h3>
+        ${hearings ? `<ul>${hearings}</ul>` : '<p class="muted">No hearing found yet for this record.</p>'}
+        <h3>Permits on these parcels since filing</h3>
+        ${permits ? `<ul>${permits}</ul>` : '<p class="muted">None in the permit data.</p>'}
+        <p class="muted small">Same-parcel permits are candidates: a permit on the site may belong to a different project.</p>
+      </section>
+      <p class="muted small">${esc(f.notice || "")}</p>`;
+  }
+
+  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

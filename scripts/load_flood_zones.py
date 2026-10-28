@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
-from ingest import flood  # noqa: E402
+from ingest import arcgis, flood  # noqa: E402
 from ingest.common import fetch_json_retry  # noqa: E402
 from shapely.geometry import mapping  # noqa: E402
 
@@ -69,49 +69,13 @@ def check_layer(url: str) -> dict:
     return meta
 
 
-def _feature_id(f: dict, oid_field: str):
-    if f.get("id") is not None:
-        return f["id"]
-    return next((v for k, v in (f.get("properties") or {}).items() if k.upper() == oid_field.upper()), None)
-
-
 def fetch_features(url: str, dfirm: str, page_size: int, oid_field: str) -> list[dict]:
-    """Every polygon of one DFIRM, fetched by OBJECTID: the layer's own count and
-    ID list first, then ID batches. FEMA answers 500 for some offset pages of
-    large polygons (seen live for Virginia Beach, 2026-10-28) although each
-    feature downloads alone, so a failed batch is split in half until it
-    succeeds; a single feature that still fails, or any ID that never
-    arrives, aborts the load (nothing written)."""
-    where = f"DFIRM_ID = '{dfirm}'"
-    expected = int(fetch_json(f"{url}/query", {"where": where, "returnCountOnly": "true", "f": "json"})["count"])
-    ids = sorted(fetch_json(f"{url}/query", {"where": where, "returnIdsOnly": "true", "f": "json"}
-                            ).get("objectIds") or [])
-    if len(set(ids)) != len(ids) or len(ids) != expected:
-        raise LoadError(f"DFIRM {dfirm}: count {expected} but {len(ids)} object IDs ({len(set(ids))} unique)")
-    out: list[dict] = []
-
-    def get(batch: list[int]) -> None:
-        try:
-            data = fetch_json(f"{url}/query", {
-                "objectIds": ",".join(str(i) for i in batch), "outFields": "*", "returnGeometry": "true",
-                "outSR": 4326, "f": "geojson"})
-        except RuntimeError:
-            if len(batch) == 1:
-                raise LoadError(f"DFIRM {dfirm}: feature {batch[0]} could not be fetched") from None
-            get(batch[:len(batch) // 2])
-            get(batch[len(batch) // 2:])
-            return
-        out.extend(data.get("features") or [])
-
-    step = max(1, min(page_size, 100))  # objectIds go in the URL: keep it short
-    for i in range(0, len(ids), step):
-        get(ids[i:i + step])
-    got = [_feature_id(f, oid_field) for f in out]
-    missing, dups = set(ids) - set(got), len(got) - len(set(got))
-    if missing or dups or len(got) != expected:
-        raise LoadError(f"DFIRM {dfirm}: expected {expected} features, received {len(got)} "
-                        f"({len(missing)} missing, {dups} duplicated); nothing written")
-    return out
+    """Every polygon of one DFIRM, complete or not at all (ingest/arcgis.py)."""
+    try:
+        return arcgis.fetch_all_by_ids(fetch_json, url, f"DFIRM_ID = '{dfirm}'", batch=min(page_size, 100),
+                                       oid_field=oid_field, label=f"DFIRM {dfirm}")
+    except arcgis.IncompleteRead as e:
+        raise LoadError(str(e)) from None
 
 
 def _prop(props: dict, name: str):

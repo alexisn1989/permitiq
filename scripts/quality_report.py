@@ -73,6 +73,19 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"{pc['items_by_status']}",
                   f"- Items with a possible Council decision: {pc['items_with_council_candidate']}",
                   "- A Planning Commission recommendation is advice to City Council, not an approval.", ""]
+    fq = q.get("filings")
+    if fq:
+        ld = fq["load"]
+        lines += ["## Applications filed", "",
+                  f"{ld['received_count']} of {ld['expected_count']} source records ({ld['where_clause']}) loaded as "
+                  f"{ld['filings']} applications (polygons sharing an Accela record merged); newest filed "
+                  f"{ld['max_date_sub']}. Parcels found for {fq['with_parcels']}.", "",
+                  f"- By stage: {fq['by_stage']}",
+                  f"- Planning Commission agenda records found in the filing layer: {fq['agenda_records_in_filings']} "
+                  f"of {fq['agenda_records']}",
+                  f"- Filed over 6 months ago with no hearing found: {fq['filed_over_6_months_no_hearing']} "
+                  "(the layer has no status: these may be withdrawn or still in review)",
+                  "- A filed application is not an approval.", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

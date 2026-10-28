@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **189 tests**, all passing, zero live network calls |
+| **Test suite** | **470 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -401,6 +401,27 @@ python scripts/run_vb_pipeline.py --phase full --pc ...       # the same steps i
 - **Coverage:** agendas found are compared month by month against the expected hearings (the 2nd Wednesday of each month). Coverage reads "unverified" until the city's agenda index has been read.
 - **Where to see it:** the lead screen (`/static/lead.html?pc=<item_key>`), the map layer "Planning Commission hearings", and `GET /api/land-use/pc-items[/{key}]`.
 
+### Applications as filed (earliest leads, Virginia Beach)
+
+The city's "Planning Commission and City Council Actions" layer maps every land-use application with its filing date and Accela record number.
+- On the real 2026 agendas, applications were filed a **median of 77 days before their Planning Commission hearing**.
+- 81 of 92 agenda record numbers appear in the layer.
+
+```bash
+python scripts/load_filings.py --inspect          # fields and counts; writes nothing
+python scripts/load_filings.py --since 2023-01-01  # after load_parcels.py: the parcels inside each boundary are linked
+python scripts/filing_report.py --out reports      # filing_leads.csv: filed or scheduled, newest first
+python scripts/run_vb_pipeline.py --phase full --filings ...
+```
+
+- **Complete loads only:** the layer's count and OBJECTID list must match what was received (`ingest/arcgis.py`, shared with the FEMA loader). Otherwise nothing is written.
+- **One row per Accela record:** polygons sharing a record are merged. Records with no filing date are counted, never shown.
+- **Parcels:** the parcels whose representative point lies inside the boundary are linked. Flood class is a screening estimate from those parcels.
+- **No status in the layer:** a filing reads "Filed — outcome not yet known" until a Planning Commission record with the same Accela number gives a stage. It never reads "approved". The layer's "Approval Date" field is empty (2 values in 6,463) and is not used.
+- **Plan types:** only codes confirmed against real agenda request types get a label (CUP, CRZ, SVR, STC, MDC); others are shown as recorded.
+- **Names:** applicant and project names are shown only for organizations.
+- **Where to see it:** the map layer "Applications filed", the lead screen (`/static/lead.html?filing=<accela id>`, with the boundary drawn), and `GET /api/land-use/filings[/{pln_id}]`.
+
 ---
 
 ## API
@@ -429,6 +450,8 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/data-as-of` | Recorded source dates and the permit observation window |
 | `GET /api/land-use/pc-items` | Planning Commission agenda items with status; filters `status`, `district`, `date_from/to`, `include_city`; coverage summary |
 | `GET /api/land-use/pc-items/{key}` | One item: request, parcels and flood class by GPIN, recommendation and vote, source PDFs, possible Council decisions |
+| `GET /api/land-use/filings` | Applications as filed, with stage; filters `stage`, `pln_type`, `filed_from/to`; active load summary |
+| `GET /api/land-use/filings/{pln_id}` | One application: boundary, parcels, Planning Commission items, same-parcel permits since filing |
 | `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
@@ -441,7 +464,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**456 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**470 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

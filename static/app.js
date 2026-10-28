@@ -773,7 +773,7 @@ renderLandUseControls();
 // A PC recommendation is advice to City Council, never an approval. Pins sit at
 // the centre of the item's parcel (by GPIN); items without one are counted.
 const PC_STATUS = {
-  scheduled: { label: "Scheduled for hearing", color: "#38bdf8" },
+  scheduled: { label: "Scheduled for hearing", color: "#3b82f6" },
   recommended_approval: { label: "PC recommended approval", color: "#a78bfa" },
   recommended_denial: { label: "PC recommended denial", color: "#f87171" },
   deferred: { label: "Deferred", color: "#fbbf24" },
@@ -824,6 +824,60 @@ $("pc-layer-toggle").addEventListener("change", (e) => {
   } else {
     map.removeLayer(pcLayer);
     renderPcControls();
+  }
+});
+
+// ---------- applications filed (earliest signal) ----------
+// The city's filing layer has no status: a filing is "filed — outcome not yet known"
+// until a Planning Commission record with the same Accela number says more.
+const FILING_STAGE = {
+  filed: { label: "Filed — outcome not yet known", color: "#22d3ee" },
+  scheduled: { label: "Scheduled for hearing", color: "#3b82f6" },
+  recommended_approval: { label: "PC recommended approval", color: "#a78bfa" },
+  recommended_denial: { label: "PC recommended denial", color: "#f87171" },
+  deferred: { label: "Deferred", color: "#fbbf24" },
+  withdrawn: { label: "Withdrawn", color: "#6b7280" },
+};
+const filingLayer = L.layerGroup();
+map.createPane("filing").style.zIndex = 630;
+let filingMeta = { count: 0, load: null };
+
+function renderFilingControls() {
+  if (!$("filing-layer-toggle").checked) { $("filing-legend").innerHTML = ""; return; }
+  const load = filingMeta.load;
+  $("filing-legend").innerHTML = Object.values(FILING_STAGE).map((v) => `
+    <span class="flood-legend-item"><span class="flood-swatch" style="background:${v.color}"></span>${esc(v.label)}</span>`).join("")
+    + `<span class="flood-legend-item">${esc(filingMeta.count)} applications`
+    + (load ? ` · newest filed ${esc(load.max_date_sub)}` : " · no filing load") + `. A filing is not an approval.</span>`;
+}
+
+async function loadFilings() {
+  filingLayer.clearLayers();
+  try {
+    const res = await api("/api/land-use/filings?limit=5000");
+    filingMeta = { count: res.count, load: res.load };
+    for (const f of res.filings) {
+      const st = FILING_STAGE[f.stage] || { label: f.stage, color: "#888" };
+      const who = f.applicant.name ? esc(f.applicant.name) : (f.applicant.withheld ? "Applicant: individual (name not shown)" : "");
+      L.circleMarker([f.lat, f.lng], { pane: "filing", radius: 6, color: "#0b1220", weight: 1.2, fillColor: st.color, fillOpacity: 0.9 })
+        .bindPopup(`<div class="popup"><b>${esc(f.plan_type_label)}</b>
+          <div>${esc(st.label)} · filed ${esc(f.date_sub)}</div><div>${who}</div>
+          <a href="/static/lead.html?filing=${encodeURIComponent(f.pln_id)}">Open application details</a></div>`)
+        .addTo(filingLayer);
+    }
+  } catch (err) {
+    toast(`Applications layer unavailable: ${err.message}`, true);
+  }
+  renderFilingControls();
+}
+
+$("filing-layer-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    filingLayer.addTo(map);
+    loadFilings();
+  } else {
+    map.removeLayer(filingLayer);
+    renderFilingControls();
   }
 });
 

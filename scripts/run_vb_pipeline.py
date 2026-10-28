@@ -164,6 +164,8 @@ def main(argv=None) -> int:
     p.add_argument("--pc", action="store_true",
                    help="also index, ingest and link Planning Commission agendas and minutes (earliest leads)")
     p.add_argument("--pc-urls", type=Path, help="hand-made list of PC PDF URLs, merged into the index")
+    p.add_argument("--filings", action="store_true",
+                   help="also load applications as filed (the city's filing layer) -- the earliest leads")
     args = p.parse_args(argv)
     if args.parcels_file and args.parcels_count is None:
         p.error("--parcels-file requires --parcels-count")
@@ -224,6 +226,10 @@ def main(argv=None) -> int:
             r.step("parcel_load", "load_parcels.py",
                    ["--file", args.parcels_file, "--expected-count", args.parcels_count] if args.parcels_file else [])
             r.step("match_parcels", "match_parcels.py", ["--reports-dir", run_dir])
+            if args.filings:
+                r.step("load_filings", "load_filings.py", [])  # after the parcel load: filings need its parcels
+            else:
+                r.skip("load_filings", "applications as filed not requested (--filings)")
             r.step("parcel_flood", "tag_parcel_flood.py", [])
             r.step("tag_decision_points", "tag_flood_zones.py", ["--decisions"])
             r.step("link", "link_decisions_permits.py", [*lu, "--reports-dir", run_dir])
@@ -267,6 +273,8 @@ def main(argv=None) -> int:
         r.step("unmatched_reasons", "unmatched_reasons.py", ["--out", run_dir])
         if args.pc:
             r.step("pc_report", "pc_report.py", ["--out", run_dir, *stage_flag])
+        if args.filings:
+            r.step("filing_report", "filing_report.py", ["--out", run_dir])
         if args.phase == "report":
             r.skip("accuracy_sample", "report phase: the existing sample and its recorded population are kept")
         elif stage == "provisional":

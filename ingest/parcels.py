@@ -161,6 +161,14 @@ class ParcelIndex:
             return []
         return sorted(self.rows[i]["gpin"] for i in self.tree.query(Point(lng, lat), predicate="covered_by"))
 
+    def within(self, geom) -> list[str]:
+        """Parcels whose representative point lies inside `geom` (an application's
+        boundary): a parcel only touching the boundary is not counted."""
+        if geom is None or geom.is_empty or self.tree is None:
+            return []
+        return sorted(self.rows[i]["gpin"] for i in self.tree.query(geom)
+                      if geom.covers(self.rows[i]["geom"].representative_point()))
+
     def by_gpin(self, raw) -> tuple[str | None, str]:
         """(gpin, how) with how in exact14 | unique10 | ambiguous10 | none."""
         d = digits(raw)
@@ -173,6 +181,14 @@ class ParcelIndex:
             if len(cands) > 1:
                 return None, "ambiguous10"
         return None, "none"
+
+
+def load_index(conn, load_id: int) -> ParcelIndex:
+    rows = [{"gpin": r["gpin"], "gpin_digits": r["gpin_digits"], "gpin10": r["gpin10"], "house": r["house"],
+             "street_norm": r["street_norm"], "geom": shape(json.loads(r["geom_geojson"]))}
+            for r in conn.execute("SELECT gpin, gpin_digits, gpin10, house, street_norm, geom_geojson FROM parcels "
+                                  "WHERE load_id = ? ORDER BY gpin", (load_id,))]
+    return ParcelIndex(rows)
 
 
 def fingerprint(*facts) -> str:

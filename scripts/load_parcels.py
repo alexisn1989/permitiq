@@ -47,6 +47,7 @@ from shapely.geometry import mapping  # noqa: E402
 
 DEFAULT_URL = "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12"
 PAGE_CAP = 2000
+ID_BATCH = 200
 RUN_LOCALITY = "vb_parcels"
 
 fetch_json = fetch_json_retry  # indirection so tests can stub the network
@@ -85,7 +86,8 @@ def fetch_complete(url: str, meta: dict, page_size: int) -> tuple[list[dict], di
         raise IncompleteLoad(f"returnIdsOnly listed {len(id_list) - len(id_set)} duplicate object IDs")
     if len(id_set) != expected:
         raise IncompleteLoad(f"returnCountOnly says {expected}, returnIdsOnly lists {len(id_set)} IDs")
-    page = max(1, min(page_size, int(meta.get("maxRecordCount") or PAGE_CAP), PAGE_CAP))
+    # objectIds go in the GET URL: 2,000 IDs per request got 400 on the live permit layer, so batches stay at 200
+    page = max(1, min(page_size, int(meta.get("maxRecordCount") or PAGE_CAP), PAGE_CAP, ID_BATCH))
     ordered = sorted(id_set)
     features, received = [], []
     for i in range(0, len(ordered), page):

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -27,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
 from ingest import parcels as P  # noqa: E402
-from shapely.geometry import shape  # noqa: E402
 
 BASE = Path(__file__).resolve().parent.parent
 # subject_kind decision_set rows (cross-row conflicts) take PARCEL_SET_VERDICTS; gpin = street-row
@@ -41,12 +39,7 @@ class _DryRun(Exception):
     pass
 
 
-def load_index(conn, load_id: int) -> P.ParcelIndex:
-    rows = [{"gpin": r["gpin"], "gpin_digits": r["gpin_digits"], "gpin10": r["gpin10"], "house": r["house"],
-             "street_norm": r["street_norm"], "geom": shape(json.loads(r["geom_geojson"]))}
-            for r in conn.execute("SELECT gpin, gpin_digits, gpin10, house, street_norm, geom_geojson FROM parcels "
-                                  "WHERE load_id = ? ORDER BY gpin", (load_id,))]
-    return P.ParcelIndex(rows)
+load_index = P.load_index  # kept here for callers and tests that use the script's name
 
 
 def match_permits(conn, index, load_id, everything, ts) -> Counter:

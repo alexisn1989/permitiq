@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import flood_stats, land_use, land_use_stats, lead_facts, pc_hearings, quality
+from ingest import filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -829,6 +829,77 @@ def pc_item_detail(item_key: str):
         "parcels": parcels, "council_candidates": candidates, "data_as_of": as_of, "notice": PC_NOTICE,
     })
     return item
+
+
+FILING_SQL = """SELECT f.*, s.pc_item_key, s.pc_status, s.hearing_date, s.n_council_candidates, s.permits_after_filing
+                 FROM filings f JOIN filing_loads l ON l.load_id = f.load_id AND l.is_active = 1
+                 JOIN filing_status s ON s.pln_id = f.pln_id"""
+FILING_STAGES = ("filed",) + db_module.PC_STATUSES
+FILING_NOTICE = ("A filed application is not an approval; the city's filing layer has no status. Later stages come "
+                 "from Planning Commission records with the same Accela number. Names of private individuals are "
+                 "not shown.")
+
+
+def _filing_out(conn, r: dict) -> dict:
+    out = filings_mod.public_filing(r)
+    out.update({"stage": r["pc_status"] or "filed", "pc_item_key": r["pc_item_key"], "hearing_date": r["hearing_date"],
+                "n_council_candidates": r["n_council_candidates"], "permits_after_filing": r["permits_after_filing"]})
+    return out
+
+
+@app.get("/api/land-use/filings")
+def filings_route(
+    stage: Optional[list[str]] = Query(None), pln_type: Optional[list[str]] = Query(None),
+    filed_from: Optional[str] = None, filed_to: Optional[str] = None, limit: int = Query(500, ge=1, le=5000),
+):
+    """Land-use applications as filed: the earliest signal, weeks before a hearing."""
+    _validate_date(filed_from, "filed_from")
+    _validate_date(filed_to, "filed_to")
+    stages = parse_tokens(stage, FILING_STAGES, "stage")
+    types = parse_tokens(pln_type, None, "pln_type")
+    where, args = [], []
+    if stages:
+        where.append(f"COALESCE(s.pc_status, 'filed') IN ({','.join('?' * len(stages))})")
+        args += stages
+    if types:
+        where.append(f"f.pln_type IN ({','.join('?' * len(types))})")
+        args += types
+    if filed_from:
+        where.append("f.date_sub >= ?")
+        args.append(filed_from)
+    if filed_to:
+        where.append("f.date_sub <= ?")
+        args.append(filed_to)
+    sql = FILING_SQL + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY f.date_sub DESC, f.pln_id LIMIT ?"
+    with _ro() as conn:
+        rows = [dict(r) for r in conn.execute(sql, (*args, limit))]
+        items = [_filing_out(conn, r) for r in rows]
+        load = conn.execute("SELECT where_clause, expected_count, filings, no_date, max_date_sub, loaded_at, "
+                            "parcel_load_id FROM filing_loads WHERE is_active = 1").fetchone()
+    return {"filings": items, "count": len(items), "load": dict(load) if load else None, "notice": FILING_NOTICE}
+
+
+@app.get("/api/land-use/filings/{pln_id}")
+def filing_detail(pln_id: str):
+    with _ro() as conn:
+        r = conn.execute(FILING_SQL + " WHERE f.pln_id = ?", (pln_id,)).fetchone()
+        if r is None:
+            raise HTTPException(404, "filing not found")
+        r = dict(r)
+        out = _filing_out(conn, r)
+        out["parcels"] = pc_hearings.item_parcels(conn, out["gpins"])
+        out["pc_items"] = [dict(x) for x in conn.execute(
+            "SELECT i.item_key, i.meeting_date, i.request, s.status FROM pc_items i, json_each(i.accela_json) a "
+            "JOIN pc_item_status s ON s.item_key = i.item_key WHERE a.value = ? ORDER BY i.meeting_date", (pln_id,))]
+        out["permits_on_site"] = [dict(x) for x in conn.execute(
+            "SELECT DISTINCT p.id AS permit_id, p.source_permit_id, p.address, p.permit_type, p.applied_date, "
+            "p.status FROM json_each(?) g JOIN permit_parcel_effective pp ON pp.display_gpin = g.value "
+            "JOIN permits p ON p.id = pp.permit_id WHERE p.applied_date >= ? ORDER BY p.applied_date LIMIT 50",
+            (r["gpins_json"], r["date_sub"]))]
+        out["geometry"] = json.loads(r["geom_geojson"])
+        out["data_as_of"] = quality.data_as_of(conn)
+    out["notice"] = FILING_NOTICE
+    return out
 
 
 @app.get("/api/land-use/export.csv")

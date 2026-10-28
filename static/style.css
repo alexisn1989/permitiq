@@ -443,7 +443,7 @@ body.lead-page { display: block; height: auto; min-height: 100%; }
 .lead dl > div { display: grid; grid-template-columns: 11rem 1fr; gap: 0.5rem; }
 .lead dt { color: var(--muted); }
 .lead dd { margin: 0; overflow-wrap: anywhere; }
-.lead dd a { color: var(--accent); }
+.lead dd a, .lead li a { color: var(--accent); }
 .lead table.grid { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .lead table.grid th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); padding: 0.4rem; }
 .lead table.grid td { border-bottom: 1px solid var(--border); padding: 0.5rem 0.4rem; vertical-align: top; }
