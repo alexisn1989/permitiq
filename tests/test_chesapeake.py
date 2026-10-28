@@ -145,3 +145,69 @@ def test_identical_reload_writes_nothing(loaded, monkeypatch):
     assert load_s.main(["--source", "ches_cases"]) == 0
     with db_module.db_readonly(loaded["db"]) as conn:
         assert conn.execute("SELECT COUNT(*) FROM city_record_loads WHERE source = 'ches_cases'").fetchone()[0] == 1
+
+
+# ---------- parcels and constraints per locality ----------
+
+from collections import Counter  # noqa: E402
+
+from ingest import constraints as C, parcels as P  # noqa: E402
+
+
+def _parcel_feat(oid, map_parcel, box, address="100 EXAMPLE RD", acres=2.0):
+    return {"type": "Feature", "id": oid, "geometry": _box(*box),
+            "properties": {"OBJECTID": oid, "MAP_PARCEL": map_parcel, "PROPCLASS": "2010", "ADDRESS": address,
+                           "CALCACREAGE": acres}}
+
+
+def test_chesapeake_parcel_field_map():
+    stats = Counter()
+    rows = P.normalize([_parcel_feat(1, "0001000000010", (-76.25, 36.70, -76.249, 36.701)),
+                        _parcel_feat(2, None, (-76.25, 36.70, -76.249, 36.701))], stats, "chesapeake")
+    assert [r.gpin for r in rows] == ["0001000000010"] and stats["skipped_no_gpin"] == 1
+    assert rows[0].attrs["tax_area_sqft"] == 87120.0 and rows[0].attrs["zoning"] is None
+    assert P.missing_fields({"MAP_PARCEL", "PROPCLASS", "ADDRESS", "CALCACREAGE"}, "chesapeake") == []
+    assert "PAR_GPIN" in P.missing_fields({"MAP_PARCEL"}, "virginia_beach")
+
+
+def test_city_layers_share_national_behaviour_and_keys():
+    assert C.LAYERS["ches_usda_soils"].source == "sda" and C.LAYERS["ches_usda_soils"].url == "VA550"
+    assert C._base("ches_nrhp_polygons") == "nrhp_polygons" and C._base("rpa") == "rpa"
+    assert all(l.locality == "chesapeake" for k, l in C.LAYERS.items() if k.startswith("ches_"))
+    assert all(l.locality == "virginia_beach" for k, l in C.LAYERS.items() if not k.startswith("ches_"))
+    assert C.ENVELOPES["chesapeake"] != C.ENVELOPES["virginia_beach"]
+
+
+def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):
+    lp = _script("load_parcels")
+    tag = _script("tag_parcel_constraints")
+    lc = _script("load_constraints")
+    feats = [_parcel_feat(1, "0001000000010", (-76.25, 36.70, -76.249, 36.701))]
+    stub = _service({P.PARCEL_SOURCES["chesapeake"]: feats})
+
+    def fetch(url, params=None, **kw):
+        if not url.endswith("/query") and url == P.PARCEL_SOURCES["chesapeake"]:
+            return {"geometryType": "esriGeometryPolygon", "objectIdField": "OBJECTID", "maxRecordCount": 2000,
+                    "fields": [{"name": n} for n in ("OBJECTID", "MAP_PARCEL", "PROPCLASS", "ADDRESS", "CALCACREAGE")]}
+        return stub(url, params)
+    monkeypatch.setattr(lp, "fetch_json", fetch)
+    assert lp.main(["--locality", "chesapeake"]) == 0
+    rpa = [{"type": "Feature", "id": 1, "geometry": _box(-76.2505, 36.6995, -76.2495, 36.7015),
+            "properties": {"OBJECTID": 1, "Distance": 100}}]
+    rstub = _service({C.LAYERS["ches_rpa_buffer"].url: rpa})
+
+    def rfetch(url, params=None, **kw):
+        if not url.endswith("/query"):
+            return {"geometryType": "esriGeometryPolygon", "objectIdField": "OBJECTID",
+                    "fields": [{"name": "OBJECTID"}, {"name": "Distance"}]}
+        return rstub(url, params)
+    monkeypatch.setattr(lc, "fetch_json", rfetch)
+    assert lc.main(["--layer", "ches_rpa_buffer"]) == 0
+    assert tag.main(["--all"]) == 1  # the Virginia Beach run refuses: no Virginia Beach parcel load
+    with db_module.db_readonly(env["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM parcel_constraints").fetchone()[0] == 0
+    assert tag.main(["--all", "--locality", "chesapeake"]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        r = conn.execute("SELECT * FROM parcel_constraints_effective WHERE layer_key = 'ches_rpa_buffer'").fetchone()
+        assert r["gpin"] == "0001000000010" and r["share"] == 0.5
+        assert C.describe("ches_rpa_buffer", dict(r))== "1.22 ac (50%) of the parcel inside: Chesapeake Bay RPA buffer"

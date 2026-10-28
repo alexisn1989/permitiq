@@ -31,7 +31,9 @@ LEAD_PARCELS_SQL = """
           json_each(f.gpins_json) g
     UNION SELECT p.gpin FROM pc_items i, json_each(i.gpins_json) g
           JOIN parcels p ON p.load_id = ? AND (p.gpin_digits = g.value OR (length(g.value) = 10 AND p.gpin10 = g.value))
-    UNION SELECT gpin FROM board_action_parcels"""
+    UNION SELECT gpin FROM board_action_parcels
+    UNION SELECT g.value FROM land_use_cases_effective c, json_each(c.gpins_json) g
+    UNION SELECT g.value FROM development_records_effective r, json_each(r.gpins_json) g"""
 
 
 class _DryRun(Exception):

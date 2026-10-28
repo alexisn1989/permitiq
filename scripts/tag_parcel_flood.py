@@ -75,7 +75,9 @@ def main(argv=None) -> int:
                 SELECT display_gpin FROM permit_parcel_effective WHERE display_gpin IS NOT NULL
                 UNION SELECT alt_gpin FROM permit_parcel_effective WHERE alt_gpin IS NOT NULL
                 UNION SELECT display_gpin FROM decision_parcel_effective WHERE display_gpin IS NOT NULL
-                UNION SELECT alt_gpin FROM decision_parcel_effective WHERE alt_gpin IS NOT NULL)"""
+                UNION SELECT alt_gpin FROM decision_parcel_effective WHERE alt_gpin IS NOT NULL
+                UNION SELECT g.value FROM land_use_cases_effective c, json_each(c.gpins_json) g
+                UNION SELECT g.value FROM development_records_effective r, json_each(r.gpins_json) g)"""
             todo = conn.execute(
                 f"""SELECT gpin, geom_geojson FROM parcels WHERE load_id = ? {scope}
                     AND gpin NOT IN (SELECT gpin FROM parcel_flood WHERE parcel_load_id = ? AND flood_load_id = ?

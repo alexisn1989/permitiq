@@ -61,10 +61,10 @@ def read_layer(layer: C.Layer) -> tuple[list[dict], int, int, str, Counter]:
         where = f"areasymbol = '{layer.url}' (USDA survey version {info['version']})"
         return rows, info["expected"], info["received"], where, stats
     meta = check_layer(layer)
-    extra = C.VB_ENVELOPE if layer.bbox else None
+    extra = C.ENVELOPES[layer.locality] if layer.bbox else None
     raw = arcgis.fetch_all_by_ids(fetch_json, layer.url, layer.where, label=layer.key, extra=extra,
                                   oid_field=meta.get("objectIdField") or "OBJECTID")
-    where = layer.where + (" AND inside the Virginia Beach envelope" if layer.bbox else "")
+    where = layer.where + (f" AND inside the {layer.locality} envelope" if layer.bbox else "")
     return C.normalize(layer, raw, stats), len(raw), len({arcgis.feature_id(f) for f in raw}), where, stats
 
 
@@ -113,7 +113,8 @@ def main(argv=None) -> int:
                 continue
             try:
                 meta = fetch_json(layer.url, {"f": "json"})
-                n = fetch_json(f"{layer.url}/query", {"where": layer.where, **(C.VB_ENVELOPE if layer.bbox else {}),
+                n = fetch_json(f"{layer.url}/query", {"where": layer.where,
+                                                      **(C.ENVELOPES[layer.locality] if layer.bbox else {}),
                                                       "returnCountOnly": "true", "f": "json"})["count"]
             except (RuntimeError, KeyError) as e:
                 print(f"{k}: [error] {e}")

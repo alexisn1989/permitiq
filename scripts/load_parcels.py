@@ -61,11 +61,11 @@ class LoadError(Exception):
     pass
 
 
-def layer_meta(url: str) -> dict:
+def layer_meta(url: str, locality: str = "virginia_beach") -> dict:
     meta = fetch_json(url, {"f": "json"})
     if meta.get("geometryType") != "esriGeometryPolygon":
         raise LoadError(f"{url}: geometryType {meta.get('geometryType')!r}, expected polygons")
-    missing = P.missing_fields({f.get("name", "") for f in meta.get("fields", [])})
+    missing = P.missing_fields({f.get("name", "") for f in meta.get("fields", [])}, locality)
     if missing:
         raise LoadError(f"{url}: layer lacks {missing}; actual fields: "
                         f"{[f.get('name') for f in meta.get('fields', [])]}")
@@ -139,8 +139,8 @@ def verify(received: list, expected: int, id_set: set | None) -> dict:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Load Virginia Beach parcels")
-    p.add_argument("--url", default=DEFAULT_URL)
+    p = argparse.ArgumentParser(description="Load a city's parcels (Virginia Beach by default)")
+    p.add_argument("--url", help="default: the locality's parcel layer")
     p.add_argument("--file", type=Path, help="downloaded GeoJSON FeatureCollection (EPSG:4326)")
     p.add_argument("--expected-count", type=int, help="required with --file (see --inspect)")
     p.add_argument("--oid-field", default="OBJECTID", help="object-ID property name in --file features")
@@ -149,6 +149,7 @@ def main(argv=None) -> int:
     p.add_argument("--locality", default=db_module.LOCALITY_DEFAULT, choices=sorted(P.PARCEL_FIELD_MAPS))
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
+    args.url = args.url or P.PARCEL_SOURCES[args.locality]
     stats: Counter = Counter()
 
     if args.inspect:
@@ -158,7 +159,8 @@ def main(argv=None) -> int:
                   f"maxRecordCount={meta.get('maxRecordCount')} "
                   f"lastEditDate={(meta.get('editingInfo') or {}).get('lastEditDate')}")
             print(f"  fields: {[f.get('name') for f in meta.get('fields', [])]}")
-            print(f"  required fields missing: {P.missing_fields({f.get('name', '') for f in meta.get('fields', [])})}")
+            print(f"  required fields missing: "
+                  f"{P.missing_fields({f.get('name', '') for f in meta.get('fields', [])}, args.locality)}")
             print(f"  returnCountOnly: {_count(args.url)}  (use as --expected-count for --file)")
             sample = fetch_json(f"{args.url}/query", {"where": "1=1", "outFields": "*", "returnGeometry": "false",
                                                       "resultRecordCount": 5, "f": "json"})
@@ -178,7 +180,7 @@ def main(argv=None) -> int:
                 return 1
             raw = json.loads(args.file.read_text(encoding="utf-8")).get("features") or []
             props = set().union(*[set((f.get("properties") or {}).keys()) for f in raw[:50]]) if raw else set()
-            missing = P.missing_fields(props)
+            missing = P.missing_fields(props, args.locality)
             if missing:
                 raise LoadError(f"{args.file}: features lack {missing}; properties seen: {sorted(props)}")
             check = verify([_source_id(f, args.oid_field) for f in raw], args.expected_count, None)
@@ -186,13 +188,13 @@ def main(argv=None) -> int:
                 raise IncompleteLoad("; ".join(check["problems"]))
             source = str(args.file)
         else:
-            meta = layer_meta(args.url)
+            meta = layer_meta(args.url, args.locality)
             vintage = (meta.get("editingInfo") or {}).get("lastEditDate")
             raw, check = fetch_complete(args.url, meta, args.page_size)
             source = args.url
         if not raw:
             raise LoadError("no features; nothing written")
-        parcels = P.normalize(raw, stats)
+        parcels = P.normalize(raw, stats, args.locality)
         if not parcels:
             raise LoadError("no usable parcels (all lacked a GPIN or polygon); nothing written")
         h = P.content_hash(parcels)

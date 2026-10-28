@@ -53,8 +53,19 @@ PARCEL_FIELD_MAP = {
     "prop_address": "PROP_ADDRESS",
     "fema_zone_bldg": "FEMA_ZONE_BLDG",
 }
-# Field maps per locality: a city is added here only after its parcel layer is profiled.
-PARCEL_FIELD_MAPS = {"virginia_beach": PARCEL_FIELD_MAP}
+# Field maps per locality: a city is added here only after its parcel layer is profiled. None = the
+# city's layer has no such field (left empty, never guessed). Chesapeake (OpenData/MapServer/15, profiled
+# 2026-10-28): MAP_PARCEL is the 13-digit parcel number; acreage is CALCACREAGE (acres, converted to sqft).
+PARCEL_FIELD_MAPS = {
+    "virginia_beach": PARCEL_FIELD_MAP,
+    "chesapeake": {"gpin": "MAP_PARCEL", "zoning": None, "land_use": None, "prop_class": "PROPCLASS",
+                   "tax_area_sqft": None, "prop_address": "ADDRESS", "fema_zone_bldg": None,
+                   "acreage": "CALCACREAGE"},
+}
+PARCEL_SOURCES = {
+    "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
+    "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
+}
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
 HAZARD_CLASSES = ("sfha_v", "sfha_a", "shaded_x")
 SHARE_ORDER = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha")
@@ -74,9 +85,9 @@ def _prop(props: dict, name: str):
     return None
 
 
-def missing_fields(available: set[str]) -> list[str]:
+def missing_fields(available: set[str], locality: str = "virginia_beach") -> list[str]:
     upper = {f.upper() for f in available}
-    return [src for src in PARCEL_FIELD_MAP.values() if src.upper() not in upper]
+    return [src for src in PARCEL_FIELD_MAPS[locality].values() if src and src.upper() not in upper]
 
 
 def _num(v):
@@ -103,14 +114,15 @@ class Parcel:
         return d[:10] if len(d) >= 10 else None
 
 
-def normalize(features: list[dict], stats) -> list[Parcel]:
+def normalize(features: list[dict], stats, locality: str = "virginia_beach") -> list[Parcel]:
     """Features -> one Parcel per GPIN. Rows sharing a GPIN (multi-part
     parcels) are unioned; if their attributes differ the first row's are kept
     and the conflict is counted for the report."""
     groups: dict[str, list[tuple[dict, object]]] = defaultdict(list)
     for f in features:
         props = f.get("properties") or {}
-        gpin = _prop(props, PARCEL_FIELD_MAP["gpin"])
+        fmap = PARCEL_FIELD_MAPS[locality]
+        gpin = _prop(props, fmap["gpin"])
         if not gpin or len(digits(gpin)) < 10:
             stats["skipped_no_gpin"] += 1
             continue
@@ -118,8 +130,11 @@ def normalize(features: list[dict], stats) -> list[Parcel]:
         if geom is None:
             stats["skipped_no_polygon"] += 1
             continue
-        attrs = {k: _prop(props, src) for k, src in PARCEL_FIELD_MAP.items() if k != "gpin"}
+        attrs = {k: (_prop(props, src) if src else None) for k, src in fmap.items() if k not in ("gpin", "acreage")}
         attrs["tax_area_sqft"] = _num(attrs["tax_area_sqft"])
+        if fmap.get("acreage") and attrs["tax_area_sqft"] is None:
+            acres = _num(_prop(props, fmap["acreage"]))
+            attrs["tax_area_sqft"] = round(acres * 43560, 1) if acres is not None else None
         groups[gpin].append((attrs, geom))
     out = []
     for gpin, rows in sorted(groups.items()):

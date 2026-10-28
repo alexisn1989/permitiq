@@ -53,6 +53,9 @@ ENV = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/
 PLAN = "https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/Planning_and_Development/MapServer"
 UTIL = "https://geo.vbgov.com/mapservices/rest/services/Public_Utilities/Other_Utility_Information/MapServer"
 NWI = "https://fwspublicservices.wim.usgs.gov/wetlandsmapservice/rest/services/Wetlands/MapServer"
+CHES = "https://gis.cityofchesapeake.net/mapping/rest/services"
+CHES_ENVELOPE = {"geometry": '{"xmin":-76.50,"ymin":36.54,"xmax":-76.05,"ymax":36.87,"spatialReference":{"wkid":4326}}',
+                 "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
 NRHP = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer"
 VDOT = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services"
 
@@ -146,6 +149,87 @@ LAYERS = {l.key: l for l in (
           fmt="UPC {UPC} {DESCRIPTION} ({SCOPE_OF_WORK_DESC}; construction start {CN_START_DATE})"),
 )}
 
+ENVELOPES = {"virginia_beach": VB_ENVELOPE, "chesapeake": CHES_ENVELOPE}
+
+# Chesapeake (city GIS profiled 2026-10-28; layers measured only on Chesapeake parcels). Its RPA buffer is
+# drawn as polygons (100 / 50 ft from the city's perennial-water layer), so RPA acres are measured here.
+_CA, _CU = f"{CHES}/Accela/Accela_special_districts_pro/MapServer", f"{CHES}/Accela/Accela_Inspections_Utilities_pro/MapServer"
+_CF, _CO = f"{CHES}/Development_Permits/Permits_Front_Counter/MapServer", f"{CHES}/OpenData/OpenData/MapServer"
+_SEWER_FMT = "{DIAMETER} in {MATERIAL}, installed {EST_YEAR}"
+CHESAPEAKE_LAYERS = (
+    Layer("ches_rpa_buffer", f"{_CA}/25", "polygon_share", "Chesapeake Bay RPA buffer",
+          "Resource Protection Area buffer drawn by the city from perennial water bodies (Distance in ft). "
+          "Clearing, grading and building need an exception.", ("Distance",), "Distance", locality="chesapeake"),
+    Layer("ches_cbpa", f"{_CA}/2", "polygon_share", "Chesapeake Bay Preservation Area (city layer)",
+          "City Chesapeake Bay Preservation Area features; buffer distances as published.",
+          ("FROMBUFDST", "TOBUFDIST"), locality="chesapeake"),
+    Layer("ches_proffers", f"{_CF}/21", "polygon_share", "Proffered rezoning area",
+          "Land under proffered (conditional) zoning: the case's proffers bind development.", ("APPNO",), "APPNO",
+          locality="chesapeake"),
+    Layer("ches_zoning", f"{_CO}/26", "polygon_share", "Zoning (city layer)", "Zoning district(s) of the parcel.",
+          ("CLASS", "APPNO"), "CLASS", classification=True, locality="chesapeake"),
+    Layer("ches_local_historic", f"{_CA}/14", "polygon_share", "Local historic district",
+          "Exterior work needs architectural review.", ("DISTRICT", "STATUS"), "DISTRICT", locality="chesapeake"),
+    Layer("ches_great_bridge_gateway", f"{_CA}/23", "polygon_share", "Great Bridge Historic Gateway Overlay District",
+          "Overlay design standards apply.", locality="chesapeake"),
+    Layer("ches_watershed_protection", f"{_CA}/17", "polygon_share", "Watershed Protection District",
+          "Development limits to protect the watershed.", ("SUBBASIN",), locality="chesapeake"),
+    Layer("ches_fentress_apz", f"{_CA}/4", "polygon_share", "Fentress Accident Potential Zone",
+          "Navy airfield accident potential zone: land-use and density limits.", ("ZONE_CODE", "ZONE_DESC"),
+          "ZONE_DESC", locality="chesapeake"),
+    Layer("ches_fentress_overlay", f"{_CA}/3", "polygon_share", "Fentress Overlay District",
+          "Airfield overlay district (noise / safety rules).", locality="chesapeake"),
+    Layer("ches_fentress_easement", f"{_CA}/5", "polygon_share", "Fentress restricted easement",
+          "Land under a Navy restrictive easement.", ("EASEMENTTYPE",), "EASEMENTTYPE", locality="chesapeake"),
+    Layer("ches_shrink_swell", f"{_CU}/6", "polygon_share", "Shrink-swell soils (city layer)",
+          "Soils that expand and shrink with moisture: foundation design and earthwork cost.", ("MUSYM",), "MUSYM",
+          locality="chesapeake"),
+    Layer("ches_hrsd_service", f"{_CU}/0", "polygon_share", "HRSD service area",
+          "Area served by the regional sewer authority (HRSD).", locality="chesapeake"),
+    Layer("ches_pump_station_areas", f"{_CU}/2", "polygon_share", "Sewer pump station service area",
+          "The city pump station whose service area covers the parcel, and its HRSD connection, as published. "
+          "Capacity is not published.", ("PUMP_STATI", "HRSDCONNCT"), "PUMP_STATI", classification=True,
+          locality="chesapeake"),
+    Layer("ches_unserved_sewer", f"{_CU}/4", "polygon_share", "Area without city sewer service",
+          "Published unserved sewer area: a connection may need an extension or a septic system.", ("LABEL",),
+          "LABEL", locality="chesapeake"),
+    Layer("ches_unserved_water", f"{_CU}/5", "polygon_share", "Area without city water service",
+          "Published unserved water area.", ("LABEL",), "LABEL", locality="chesapeake"),
+    Layer("ches_gravity_sewer", f"{_CF}/5", "line_crossing", "City gravity sewer main",
+          "Nearest published city gravity sewer main within 300 ft (size and material as published; capacity "
+          "not published).", ("DIAMETER", "MATERIAL", "EST_YEAR", "PUMPSTA", "OWNEDBY"), near_ft=300,
+          fmt=_SEWER_FMT, locality="chesapeake"),
+    Layer("ches_water_lines", f"{_CF}/6", "line_crossing", "City water line",
+          "Nearest published city water line within 300 ft.", ("DIAMETER", "MATL", "INST_YEAR", "STATUS"),
+          near_ft=300, fmt="{DIAMETER} in {MATL}, installed {INST_YEAR}", locality="chesapeake"),
+    # federal and state layers, Chesapeake's extent / survey area
+    Layer("ches_usda_soils", "VA550", "polygon_share", "Soils (USDA soil survey)",
+          LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",
+          locality="chesapeake"),
+    Layer("ches_nwi_wetlands", LAYERS["nwi_wetlands"].url, "polygon_share", LAYERS["nwi_wetlands"].label,
+          LAYERS["nwi_wetlands"].meaning, LAYERS["nwi_wetlands"].attrs, "WETLAND_TYPE", bbox=True,
+          where=LAYERS["nwi_wetlands"].where, locality="chesapeake"),
+    Layer("ches_nrhp_polygons", LAYERS["nrhp_polygons"].url, "polygon_share", LAYERS["nrhp_polygons"].label,
+          LAYERS["nrhp_polygons"].meaning, LAYERS["nrhp_polygons"].attrs, "RESNAME", where="County = 'Chesapeake'",
+          locality="chesapeake"),
+    Layer("ches_nrhp_points", LAYERS["nrhp_points"].url, "point_near", LAYERS["nrhp_points"].label,
+          LAYERS["nrhp_points"].meaning, LAYERS["nrhp_points"].attrs, near_ft=500, where="County = 'Chesapeake'",
+          fmt=LAYERS["nrhp_points"].fmt, locality="chesapeake"),
+    Layer("ches_vdot_adt", LAYERS["vdot_adt"].url, "line_crossing", LAYERS["vdot_adt"].label,
+          LAYERS["vdot_adt"].meaning, LAYERS["vdot_adt"].attrs, near_ft=300,
+          where="FROM_JURISDICTION LIKE '%Chesapeake%' OR TO_JURISDICTION LIKE '%Chesapeake%'",
+          fmt=LAYERS["vdot_adt"].fmt, locality="chesapeake"),
+    Layer("ches_vdot_syip_lines", LAYERS["vdot_syip_lines"].url, "line_crossing", LAYERS["vdot_syip_lines"].label,
+          LAYERS["vdot_syip_lines"].meaning, LAYERS["vdot_syip_lines"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC LIKE '%Chesapeake%'", fmt=LAYERS["vdot_syip_lines"].fmt, locality="chesapeake"),
+    Layer("ches_vdot_syip_points", LAYERS["vdot_syip_points"].url, "point_near", LAYERS["vdot_syip_points"].label,
+          LAYERS["vdot_syip_points"].meaning, LAYERS["vdot_syip_points"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC LIKE '%Chesapeake%'", fmt=LAYERS["vdot_syip_points"].fmt, locality="chesapeake"),
+)
+LAYERS.update({l.key: l for l in CHESAPEAKE_LAYERS})
+# the same national layer under another city's key: soil summary, NRHP boxes and wording behave the same
+BASE_KEY = {l.key: l.key.removeprefix("ches_") for l in CHESAPEAKE_LAYERS}
+
 BOARD_LAYERS = {
     "cbpa": (f"{PLAN}/3", "Chesapeake Bay Preservation Area Board actions"),
     "wetlands_board": (f"{PLAN}/5", "Wetlands Board actions and waterfront permits"),
@@ -172,6 +256,11 @@ def keep_attrs(layer: Layer, props: dict) -> dict:
     return out
 
 
+def _base(key: str) -> str:
+    """The national layer a city-specific key stands for (ches_usda_soils -> usda_soils)."""
+    return BASE_KEY.get(key, key)
+
+
 def _attr(props: dict | None, name: str):
     return next((v for k, v in (props or {}).items() if k.upper() == name.upper()), None)
 
@@ -190,7 +279,7 @@ def normalize(layer: Layer, features: list[dict], stats) -> list[dict]:
             stats["no_geometry"] += 1
             continue
         geom = shape(g)
-        if layer.key == "nrhp_polygons" and _circumscribed(f.get("properties")) and \
+        if _base(layer.key) == "nrhp_polygons" and _circumscribed(f.get("properties")) and \
                 str(_attr(f.get("properties"), "ResType") or "").lower() != "district":
             stats["circumscribed_non_district_skipped"] += 1  # a box around one building, not a boundary:
             continue                                            # its NPS point gives the location instead
@@ -253,7 +342,7 @@ class LayerIndex:
                         k = self.rows[i]["attrs"].get(self.layer.group_by) or "unnamed"
                         by.setdefault(k, [0.0, self.rows[i]["attrs"]])[0] += part
                 detail["by"] = [{"name": k, "acres": round(v / SQFT_PER_ACRE, 3), "share": round(v / area, 4),
-                                 **({"attrs": a} if self.layer.source == "sda" or self.layer.key == "nrhp_polygons"
+                                 **({"attrs": a} if self.layer.source == "sda" or _base(self.layer.key) == "nrhp_polygons"
                                     else {})}
                                 for k, (v, a) in sorted(by.items(), key=lambda kv: -kv[1][0])]
                 if self.layer.source == "sda":
@@ -348,8 +437,8 @@ def describe(layer_key: str, row: dict) -> str:
     if not row["overlap_sqft"]:
         return f"{layer.label} {row['distance_ft']:,.0f} ft from the parcel" + (f": {what}" if what else "")
     acres = row["overlap_sqft"] / SQFT_PER_ACRE
-    text = f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the {layer.label[0].lower() + layer.label[1:]}"
-    if layer.key == "nrhp_polygons":
+    text = f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside: {layer.label}"
+    if _base(layer.key) == "nrhp_polygons":
         b = (detail.get("by") or [{}])[0]
         if _circumscribed(b.get("attrs")):
             return (f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the approximate (circumscribed) "
@@ -411,7 +500,8 @@ def public_constraints(conn, gpins: list[str]) -> dict:
 
 CSV_COLUMNS = ("rpa", "southern_watersheds_buffer_share", "special_floodplain_share", "shrink_swell_share",
                "nwi_wetland_share", "shallow_water_table_share", "hydric_share", "nrhp", "nearest_adt",
-               "syip_within_ft", "sewer_pump_station_project_ft", "utility_project_area",
+               "syip_within_ft", "sewer_pump_station_project_ft", "utility_project_area", "rpa_buffer_share",
+               "unserved_sewer_share", "gravity_sewer_ft", "fentress_apz_share",
                "historic_overlay", "dam_break", "prior_cbpa_actions", "prior_wetlands_board_actions",
                "prior_hrb_actions")
 
@@ -428,7 +518,11 @@ def csv_summary(conn, gpins: list[str]) -> dict:
     near: dict[str, dict] = {}
     for r in conn.execute(f"SELECT layer_key, share, line_length_ft, distance_ft, detail_json "
                           f"FROM parcel_constraints_effective WHERE gpin IN ({marks})", gpins):
-        k = r["layer_key"]
+        k = _base(r["layer_key"])
+        if k == "gravity_sewer" and r["distance_ft"] is not None:
+            if out["gravity_sewer_ft"] == "" or r["distance_ft"] < out["gravity_sewer_ft"]:
+                out["gravity_sewer_ft"] = round(r["distance_ft"])
+            continue
         if k == "usda_soils":
             d = json.loads(r["detail_json"])
             for col, part in (("shallow_water_table_share", "shallow_water_table"), ("hydric_share", "hydric")):
@@ -462,7 +556,8 @@ def csv_summary(conn, gpins: list[str]) -> dict:
     if syip:
         out["syip_within_ft"] = round(min(syip))
     nrhp = [json.loads(r[0]) for r in conn.execute(
-        f"SELECT detail_json FROM parcel_constraints_effective WHERE layer_key = 'nrhp_polygons' AND share > 0 "
+        f"SELECT detail_json FROM parcel_constraints_effective WHERE layer_key IN ('nrhp_polygons', "
+        f"'ches_nrhp_polygons') AND share > 0 "
         f"AND gpin IN ({marks})", gpins)]
     if any(not _circumscribed((d.get("by") or [{}])[0].get("attrs")) for d in nrhp):
         out["nrhp"] = "inside a listed property"
@@ -472,7 +567,8 @@ def csv_summary(conn, gpins: list[str]) -> dict:
         out["nrhp"] = f"listed site {near['nrhp_points']['distance_ft']:.0f} ft"
     for col, key in (("southern_watersheds_buffer_share", "southern_watersheds_buffer"),
                      ("special_floodplain_share", "special_floodplain"), ("shrink_swell_share", "shrink_swell_soils"),
-                     ("nwi_wetland_share", "nwi_wetlands")):
+                     ("nwi_wetland_share", "nwi_wetlands"), ("rpa_buffer_share", "rpa_buffer"),
+                     ("unserved_sewer_share", "unserved_sewer"), ("fentress_apz_share", "fentress_apz")):
         if key in best:
             out[col] = round(best[key]["share"], 4)
     for col, keys in (("historic_overlay", ("historic_overlay", "historic_kempsville")), ("dam_break", ("dam_break",))):
