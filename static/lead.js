@@ -265,6 +265,8 @@ async function bootCase() {
     const body = await res.json();
     if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
     $("lead").innerHTML = buildCaseHtml(body);
+    const tag = document.querySelector(".tagline");
+    if (tag) tag.textContent = "Lead detail · Chesapeake";
     const shape = body.geometry || (body.lat != null ? { type: "Point", coordinates: [body.lng, body.lat] } : null);
     if (window.L && shape) {
       const map = L.map("case-map", { zoomControl: false, attributionControl: false });

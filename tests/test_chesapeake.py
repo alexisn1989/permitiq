@@ -211,7 +211,11 @@ def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):
     with db_module.db_readonly(env["db"]) as conn:
         r = conn.execute("SELECT * FROM parcel_constraints_effective WHERE layer_key = 'ches_rpa_buffer'").fetchone()
         assert r["gpin"] == "0001000000010" and r["share"] == 0.5
-        assert C.describe("ches_rpa_buffer", dict(r))== "1.22 ac (50%) of the parcel inside: Chesapeake Bay RPA buffer"
+        assert C.describe("ches_rpa_buffer", dict(r)) == "1.22 ac (50%) of the parcel inside: Chesapeake Bay RPA buffer"
+        block = C.public_constraints(conn, ["0001000000010"])
+        assert [x["layer"] for x in block["layers_checked"]] == ["ches_rpa_buffer"]
+        assert not any("pipe locations" in x for x in block["not_covered"])
+        assert not C.public_constraints(conn, [])["layers_checked"]  # no gpins: Virginia Beach's layers only
 
 
 # ---------- API ----------
@@ -278,3 +282,10 @@ def test_city_layers_expected_only_once_that_city_has_parcels(env):
                      "unique_source_ids, loaded_at, is_active, locality) VALUES ('x', 'h', 0, 0, 0, 0, 'now', 1, "
                      "'chesapeake')")
         assert "ches_rpa_buffer" in Q.constraint_quality(conn)["missing_layers"]
+
+
+def test_pump_station_fact_names_station_and_hrsd_connection():
+    row = {"detail_json": json.dumps({"by": [{"name": 28, "acres": 0.44, "share": 1.0,
+                                              "attrs": {"PUMP_STATI": 28, "HRSDCONNCT": "Direct"}}]})}
+    assert C.describe("ches_pump_station_areas", row) == \
+        "Service area of pump station 28: 0.44 ac (100%), HRSD connection Direct (as published)"

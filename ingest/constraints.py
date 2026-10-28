@@ -342,7 +342,7 @@ class LayerIndex:
                         k = self.rows[i]["attrs"].get(self.layer.group_by) or "unnamed"
                         by.setdefault(k, [0.0, self.rows[i]["attrs"]])[0] += part
                 detail["by"] = [{"name": k, "acres": round(v / SQFT_PER_ACRE, 3), "share": round(v / area, 4),
-                                 **({"attrs": a} if self.layer.source == "sda" or _base(self.layer.key) == "nrhp_polygons"
+                                 **({"attrs": a} if self.layer.source == "sda" or _base(self.layer.key) in ("nrhp_polygons", "pump_station_areas")
                                     else {})}
                                 for k, (v, a) in sorted(by.items(), key=lambda kv: -kv[1][0])]
                 if self.layer.source == "sda":
@@ -415,6 +415,11 @@ def describe(layer_key: str, row: dict) -> str:
     """One measured fact, in plain words."""
     layer = LAYERS[layer_key]
     detail = json.loads(row["detail_json"]) if isinstance(row.get("detail_json"), str) else (row.get("detail") or {})
+    if _base(layer.key) == "pump_station_areas":
+        parts = [f"pump station {b['name']}: {b['acres']:,.2f} ac ({b['share'] * 100:.0f}%)"
+                 + (f", HRSD connection {b['attrs']['HRSDCONNCT']} (as published)"
+                    if (b.get("attrs") or {}).get("HRSDCONNCT") else "") for b in detail.get("by", [])[:4]]
+        return "Service area of " + "; ".join(parts) if parts else "mapped"
     if layer.classification:
         parts = [f"{b['name']} {b['acres']:,.2f} ac ({b['share'] * 100:.0f}%)" for b in detail.get("by", [])[:4]]
         text = "Mapped: " + "; ".join(parts) if parts else "mapped"
@@ -484,14 +489,29 @@ def public_constraints(conn, gpins: list[str]) -> dict:
                             "applicant": F._public_name(r["appl_name"]), "deeplink": r["deeplink"]})
     boards = {r["layer_key"]: r["loaded_at"] for r in conn.execute(
         "SELECT layer_key, loaded_at FROM board_action_loads WHERE is_active = 1")}
+    # checked / not covered are stated for the parcels' own city (no gpins: Virginia Beach, as before)
+    cities = {r[0] for r in conn.execute(
+        f"SELECT DISTINCT l.locality FROM parcels p JOIN parcel_loads l ON l.load_id = p.load_id AND l.is_active = 1 "
+        f"WHERE p.gpin IN ({marks})", gpins)} if gpins else set()
+    cities = cities or {"virginia_beach"}
+    loaded = {k: v for k, v in loaded.items() if k in LAYERS and LAYERS[k].locality in cities}
+    boards_note = None
+    if "virginia_beach" not in cities:
+        boards = {}  # the board histories are Virginia Beach's
+        boards_note = "Board histories are loaded for Virginia Beach only."
+    not_covered = []
+    if "virginia_beach" in cities:
+        not_covered.append("sewer / water capacity and pipe locations (not published)")
+    if cities - {"virginia_beach"}:
+        not_covered.append("sewer / water capacity (not published; mains and service areas are shown as published)")
+    not_covered.append("Virginia Landmarks Register (state DHR service unreachable)")
     return {
         "constraints": items, "board_history": history,
         "layers_checked": [{"layer": k, "label": LAYERS[k].label, "as_of": v} for k, v in sorted(loaded.items())
                            if k in LAYERS],
         "boards_checked": [{"board": k, "label": BOARD_LAYERS[k][1], "as_of": v} for k, v in sorted(boards.items())
                            if k in BOARD_LAYERS],
-        "not_covered": ["sewer / water capacity and pipe locations (not published)",
-                        "Virginia Landmarks Register (state DHR service unreachable)"],
+        "not_covered": not_covered, "boards_note": boards_note,
         "notice": "Screening estimates from public GIS layers (city, USDA, USFWS, NPS, VDOT), not a determination: "
                   "confirm with a site survey, a wetland delineation and the city's RPA determination. Names of "
                   "private individuals are not shown.",

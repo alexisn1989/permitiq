@@ -130,7 +130,7 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"- Cases linked to a parcel: {pq['cases_with_parcels']}; development records linked: "
                   f"{pq['records_with_parcels']}",
                   f"- Records by source / status: {pq['records_by_source_status']}",
-                  f"- Parcels: {pq['parcels']}; flood-tagged: {pq['parcels_flood_tagged']}",
+                  f"- Parcels: {pq['parcels']}; flood-tagged (lead parcels: cases' and records'): {pq['parcels_flood_tagged']}",
                   "- Development plans and right-of-way permits are not building permits and are not counted as "
                   "permits.", ""]
     if q.get("source_rows"):

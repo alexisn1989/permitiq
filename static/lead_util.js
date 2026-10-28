@@ -157,7 +157,7 @@
         ${rows ? `<table class="grid"><thead><tr><th>Layer</th><th>Measured on the parcel</th><th>Parcel</th><th>Layer as of</th></tr></thead><tbody>${rows}</tbody></table>`
           : `<p class="muted">${checked ? "None of the checked layers touches these parcels." : "No constraint layers loaded yet."}</p>`}
         <h3>History with the city's boards on these parcels</h3>
-        ${hist ? `<ul>${hist}</ul>` : `<p class="muted">${(sc.boards_checked || []).length ? "No prior board actions found." : "Board histories not loaded yet."}</p>`}
+        ${hist ? `<ul>${hist}</ul>` : `<p class="muted">${(sc.boards_checked || []).length ? "No prior board actions found." : (sc.boards_note || "Board histories not loaded yet.")}</p>`}
         <p class="muted small">Layers checked: ${checked || "none"}. Not covered: ${esc((sc.not_covered || []).join("; "))}.</p>
         <p class="muted small">${esc(sc.notice || "")}</p>
       </section>`;
@@ -295,7 +295,7 @@
       <section class="card">
         <div class="card-head"><h2>${esc(c.case_type || "Land-use case")} · ${esc(c.case_id)}</h2>
           <span class="status-pill">${esc(CASE_STAGE_TEXT[c.final.stage] || c.final.stage)}</span></div>
-        <p class="muted">${esc(c.address || "")}${c.applied_date ? ` · applied ${esc(c.applied_date)}` : ""}${c.final.date ? ` · final action ${esc(c.final.date)}` : ""}${c.legacy ? " · legacy record (2014 import)" : ""}</p>
+        <p class="muted">${[c.address ? esc(c.address) : "", c.applied_date ? `applied ${esc(c.applied_date)}` : "", c.final.date ? `final action ${esc(c.final.date)}` : "", c.legacy ? "legacy record (2014 import)" : ""].filter(Boolean).join(" · ")}</p>
         <dl class="facts">
           <div><dt>Project</dt><dd>${party(c.project, "The project name")}</dd></div>
           <div><dt>Zoning</dt><dd>${zoning}</dd></div>

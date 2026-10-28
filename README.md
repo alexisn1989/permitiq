@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **526 tests**, all passing, zero live network calls |
+| **Test suite** | **527 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -551,6 +551,11 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
   - the nearest gravity sewer main and water line, with size, material and year.
 
   Capacity is never inferred.
+- **Checked against the sources:**
+  - 5 cases and 5 plans matched the city's live layers field for field;
+  - 4 parcels × 6 layers (RPA buffer, unserved sewer, Fentress APZ, pump-station areas, CBPA, gravity sewer within 300 ft) agreed with the city server's own spatial queries;
+  - 4 parcels' flood classes agreed with FEMA's zones;
+  - Virginia Beach results stayed identical with Chesapeake loaded.
 - **Privacy:**
   - the city's free-text case notes are never served, since they can name owners or requesters;
   - project names and plan titles are shown only when clearly an organization;
@@ -606,7 +611,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**526 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**527 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 
