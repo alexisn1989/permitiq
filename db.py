@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1616,6 +1616,54 @@ _SCHEMA_V12_STATEMENTS = [
 ]
 
 
+# Schema v13 (a second city). Parcel loads carry their locality, and "one active
+# parcel load" becomes one active load per locality. The views that joined
+# "the" active parcel load (or Virginia Beach's flood load) now join the load of
+# the row's own locality -- without this, a second city's active load would
+# duplicate every permit / decision row. Virginia Beach results are unchanged.
+LOCALITY_DEFAULT = "virginia_beach"
+_VIEW_LOCALITY_PATCHES = {
+    "permit_parcel_effective": [
+        ("(p.locality = 'virginia_beach') AS in_scope",
+         "(p.locality = 'virginia_beach' OR p.locality IN (SELECT DISTINCT locality FROM parcel_loads)) AS in_scope"),
+        ("LEFT JOIN parcel_loads l ON l.is_active = 1",
+         "LEFT JOIN parcel_loads l ON l.is_active = 1 AND l.locality = p.locality"),
+    ],
+    "decision_parcel_effective": [
+        ("LEFT JOIN parcel_loads l ON l.is_active = 1",
+         "LEFT JOIN parcel_loads l ON l.is_active = 1 AND l.locality = 'virginia_beach'"),
+    ],
+    "parcel_flood_effective": [
+        ("JOIN flood_locality_dfirm m ON m.locality = 'virginia_beach'",
+         "JOIN flood_locality_dfirm m ON m.locality = pl.locality"),
+    ],
+}
+
+
+def _localize_views(conn) -> None:
+    """Recreate the views above with locality-aware joins. Each pattern must be
+    found exactly once in the current definition, or the migration stops."""
+    for view, patches in _VIEW_LOCALITY_PATCHES.items():
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?", (view,)).fetchone()[0]
+        for old, new in patches:
+            if new in sql:
+                continue
+            if sql.count(old) != 1:
+                raise RuntimeError(f"v13 migration: {view} definition changed; expected one {old!r}")
+            sql = sql.replace(old, new)
+        conn.execute(f"DROP VIEW {view}")
+        conn.execute(sql)
+
+
+def _schema_v13(conn) -> None:
+    if "locality" not in {r[1] for r in conn.execute("PRAGMA table_info(parcel_loads)")}:
+        conn.execute(f"ALTER TABLE parcel_loads ADD COLUMN locality TEXT NOT NULL DEFAULT '{LOCALITY_DEFAULT}'")
+    conn.execute("DROP INDEX IF EXISTS idx_parcel_loads_active")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_parcel_loads_active_locality ON parcel_loads(locality) "
+                 "WHERE is_active = 1")
+    _localize_views(conn)
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1676,6 +1724,8 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 12:
             for statement in _SCHEMA_V12_STATEMENTS:
                 conn.execute(statement)
+        if current_version < 13:
+            _schema_v13(conn)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
                      "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")

@@ -111,7 +111,7 @@ def reconcile_decisions(conn) -> Counter:
     rows = conn.execute(
         "SELECT x.decision_key, x.seq, x.gpin, x.method, x.match_fp, (a.gpin10 IS NOT NULL) AS is_gpin_row "
         "FROM decision_parcel x JOIN land_use_decision_addresses a ON a.decision_key = x.decision_key AND a.seq = x.seq "
-        "JOIN parcel_loads l ON l.load_id = x.load_id AND l.is_active = 1 "
+        "JOIN parcel_loads l ON l.load_id = x.load_id AND l.is_active = 1 AND l.locality = 'virginia_beach' "
         # the row's own facts are current (the view's freshness also needs set_fp, which is set here)
         "WHERE x.tagged_gpin10 IS a.gpin10 AND x.tagged_house IS a.house_from AND x.tagged_house_to IS a.house_to "
         "AND x.tagged_street IS a.street_norm AND x.tagged_lat IS a.lat AND x.tagged_lng IS a.lng "
@@ -176,7 +176,8 @@ def main(argv=None) -> int:
     ts = db_module.now_iso()
     try:
         with db_module.db() as conn:
-            load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
+            load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 "
+                                "AND locality = 'virginia_beach'").fetchone()
             if load is None:
                 print("[FATAL] no active parcel load: run scripts/load_parcels.py", file=sys.stderr)
                 return 1

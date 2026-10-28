@@ -146,6 +146,7 @@ def main(argv=None) -> int:
     p.add_argument("--oid-field", default="OBJECTID", help="object-ID property name in --file features")
     p.add_argument("--page-size", type=int, default=PAGE_CAP)
     p.add_argument("--inspect", action="store_true", help="print layer metadata and samples; write nothing")
+    p.add_argument("--locality", default=db_module.LOCALITY_DEFAULT, choices=sorted(P.PARCEL_FIELD_MAPS))
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     stats: Counter = Counter()
@@ -211,16 +212,18 @@ def main(argv=None) -> int:
         return 0
 
     with db_module.db() as conn:
-        active = conn.execute("SELECT load_id, content_hash FROM parcel_loads WHERE is_active = 1").fetchone()
+        active = conn.execute("SELECT load_id, content_hash FROM parcel_loads WHERE is_active = 1 AND locality = ?",
+                              (args.locality,)).fetchone()
         if active and active["content_hash"] == h:
             print(f"Unchanged: identical to active parcel load {active['load_id']}; nothing written")
             return 0
-        conn.execute("UPDATE parcel_loads SET is_active = 0 WHERE is_active = 1")
+        conn.execute("UPDATE parcel_loads SET is_active = 0 WHERE is_active = 1 AND locality = ?", (args.locality,))
         load_id = conn.execute(
             """INSERT INTO parcel_loads (source_url, source_vintage, content_hash, feature_count, expected_count,
-                   received_count, unique_source_ids, loaded_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                   received_count, unique_source_ids, loaded_at, is_active, locality)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
             (source, None if vintage is None else str(vintage), h, len(parcels), check["expected"],
-             check["received"], check["unique"], db_module.now_iso())).lastrowid
+             check["received"], check["unique"], db_module.now_iso(), args.locality)).lastrowid
         rows = []
         for pc in parcels:
             house, street = P.address_parts(pc.attrs["prop_address"])

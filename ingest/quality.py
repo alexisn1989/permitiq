@@ -42,7 +42,8 @@ def compute_source_dates(conn, council_export_meta: dict | None = None) -> dict:
                        "FROM flood_zone_loads l JOIN flood_locality_dfirm m ON m.dfirm_id = l.dfirm_id "
                        "WHERE m.locality = ? AND l.is_active = 1", (LOCALITY,))
     parcels = _one(conn, "SELECT load_id, source_url, source_vintage, content_hash, feature_count, expected_count, "
-                         "received_count, unique_source_ids, loaded_at FROM parcel_loads WHERE is_active = 1")
+                         "received_count, unique_source_ids, loaded_at FROM parcel_loads WHERE is_active = 1 "
+                         "AND locality = 'virginia_beach'")
     if parcels:
         parcels["source_vintage_iso"] = _ms_to_iso(parcels["source_vintage"])
     council = _one(conn, "SELECT source_file_sha256, MAX(updated_at) AS ingested_at, COUNT(*) AS decisions "
@@ -122,7 +123,7 @@ def _table_hash(conn, sql: str) -> str:
 def snapshot(conn) -> dict:
     flood = _one(conn, "SELECT l.load_id FROM flood_zone_loads l JOIN flood_locality_dfirm m ON m.dfirm_id = l.dfirm_id "
                        "WHERE m.locality = ? AND l.is_active = 1", (LOCALITY,))
-    parcel = _one(conn, "SELECT load_id FROM parcel_loads WHERE is_active = 1")
+    parcel = _one(conn, "SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?", (LOCALITY,))
     cov = _one(conn, "SELECT backfill_run_id, last_refresh_run_id FROM permit_coverage WHERE locality = ?", (LOCALITY,))
     shas = sorted(r[0] for r in conn.execute("SELECT DISTINCT source_file_sha256 FROM land_use_decisions"))
     state = {name: _table_hash(conn, sql) for name, sql in STATE_SQL.items()}

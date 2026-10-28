@@ -54,7 +54,8 @@ def main(argv=None) -> int:
     try:
         cohort_cfg = flood_stats.load_cohort_config(args.config)
         with db_module.db_readonly() as conn:
-            load = conn.execute("SELECT * FROM parcel_loads WHERE is_active = 1").fetchone()
+            load = conn.execute("SELECT * FROM parcel_loads WHERE is_active = 1 "
+                                "AND locality = 'virginia_beach'").fetchone()
             if load is None:
                 print("[FATAL] no active parcel load: run scripts/load_parcels.py", file=sys.stderr)
                 return 1

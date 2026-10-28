@@ -72,6 +72,7 @@ class Layer:
     bbox: bool = False  # filter the source to the Virginia Beach envelope
     source: str = "arcgis"  # arcgis | sda
     fmt: str | None = None  # how the nearest feature is described, from its allowlisted attributes
+    locality: str = "virginia_beach"  # the city whose parcels this layer is measured on
 
 
 LAYERS = {l.key: l for l in (

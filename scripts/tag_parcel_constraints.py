@@ -42,12 +42,14 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Measure parcels against site-constraint layers")
     p.add_argument("--all", action="store_true", help="every parcel of the active load, not just lead parcels")
     p.add_argument("--layer", action="append", choices=sorted(C.LAYERS), help="only these layers (default: all)")
+    p.add_argument("--locality", default=db_module.LOCALITY_DEFAULT)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     ts = db_module.now_iso()
     try:
         with db_module.db() as conn:
-            pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
+            pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?",
+                              (args.locality,)).fetchone()
             if pl is None:
                 print("[FATAL] needs an active parcel load (load_parcels.py)", file=sys.stderr)
                 return 1
@@ -59,7 +61,7 @@ def main(argv=None) -> int:
             print(f"parcel load {pl}: {len(parcels)} parcel(s) in scope{' (all)' if args.all else ' (lead parcels)'}")
             touched: Counter = Counter()
             for key, layer in sorted(C.LAYERS.items()):
-                if args.layer and key not in args.layer:
+                if (args.layer and key not in args.layer) or layer.locality != args.locality:
                     continue
                 got = C.load_layer_index(conn, layer)
                 if got is None:

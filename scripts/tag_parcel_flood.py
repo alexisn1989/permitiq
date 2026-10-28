@@ -48,6 +48,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Parcel flood area shares (screening estimate)")
     p.add_argument("--config", type=Path, default=BASE / "config" / "parcels.toml")
     p.add_argument("--all", action="store_true", help="every parcel of the active load, not just referenced ones")
+    p.add_argument("--locality", default=db_module.LOCALITY_DEFAULT)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     try:
@@ -58,9 +59,10 @@ def main(argv=None) -> int:
     ts = db_module.now_iso()
     try:
         with db_module.db() as conn:
-            pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
+            pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?",
+                              (args.locality,)).fetchone()
             fl = conn.execute("SELECT l.load_id FROM flood_zone_loads l JOIN flood_locality_dfirm m "
-                              "ON m.dfirm_id = l.dfirm_id WHERE m.locality = 'virginia_beach' AND l.is_active = 1").fetchone()
+                              "ON m.dfirm_id = l.dfirm_id WHERE m.locality = ? AND l.is_active = 1", (args.locality,)).fetchone()
             if pl is None or fl is None:
                 print("[FATAL] needs an active parcel load (load_parcels.py) and an active flood load "
                       "(load_flood_zones.py)", file=sys.stderr)

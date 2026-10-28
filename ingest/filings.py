@@ -107,7 +107,8 @@ def read_and_link(fetch, conn, url: str, where: str, label: str) -> tuple[list[d
     raw = arcgis.fetch_all_by_ids(fetch, url, where, out_fields=OUT_FIELDS, label=label)
     stats: Counter = Counter()
     merged = merge(raw, stats)
-    parcel_load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
+    parcel_load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 "
+                               "AND locality = 'virginia_beach'").fetchone()  # the filing layer is Virginia Beach's
     index = P.load_index(conn, parcel_load["load_id"]) if parcel_load else None
     for f in merged:
         f["gpins"] = index.within(f["geom"]) if index else []

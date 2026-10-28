@@ -53,6 +53,8 @@ PARCEL_FIELD_MAP = {
     "prop_address": "PROP_ADDRESS",
     "fema_zone_bldg": "FEMA_ZONE_BLDG",
 }
+# Field maps per locality: a city is added here only after its parcel layer is profiled.
+PARCEL_FIELD_MAPS = {"virginia_beach": PARCEL_FIELD_MAP}
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
 HAZARD_CLASSES = ("sfha_v", "sfha_a", "shaded_x")
 SHARE_ORDER = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha")
