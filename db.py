@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1500,6 +1500,122 @@ _SCHEMA_V11_STATEMENTS = [
 ]
 
 
+# Schema v12 (site constraints, Virginia Beach). City GIS layers that limit what
+# a site can do -- Chesapeake Bay RPA boundary, Southern Watersheds buffer,
+# floodplains subject to special restrictions, soils, historic overlays, dam
+# break zones -- loaded complete or not at all (one active load per layer),
+# and measured per parcel: area share for polygon layers, crossing length and
+# distance for line layers (screening estimates, never a determination).
+# Board actions (CBPA, Wetlands Board, Historical Review Board) are the
+# parcel's history with those boards, merged per Accela record.
+CONSTRAINT_KINDS = ("polygon_share", "line_crossing")
+_SCHEMA_V12_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS constraint_loads (
+        load_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        layer_key       TEXT NOT NULL,
+        source_url      TEXT NOT NULL,
+        where_clause    TEXT NOT NULL,
+        expected_count  INTEGER NOT NULL,
+        received_count  INTEGER NOT NULL,
+        unique_ids      INTEGER NOT NULL,
+        features        INTEGER NOT NULL,
+        content_hash    TEXT NOT NULL,
+        loaded_at       TEXT NOT NULL,
+        is_active       INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+        CHECK (is_active = 0 OR (expected_count = received_count AND received_count = unique_ids))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_constraint_loads_active ON constraint_loads(layer_key) WHERE is_active = 1",
+    """
+    CREATE TABLE IF NOT EXISTS constraint_features (
+        load_id      INTEGER NOT NULL REFERENCES constraint_loads(load_id),
+        feature_id   INTEGER NOT NULL,
+        geom_geojson TEXT NOT NULL,
+        minx REAL NOT NULL, miny REAL NOT NULL, maxx REAL NOT NULL, maxy REAL NOT NULL,
+        attrs_json   TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (load_id, feature_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS parcel_constraints (
+        parcel_load_id     INTEGER NOT NULL REFERENCES parcel_loads(load_id),
+        constraint_load_id INTEGER NOT NULL REFERENCES constraint_loads(load_id),
+        gpin               TEXT NOT NULL,
+        layer_key          TEXT NOT NULL,
+        overlap_sqft       REAL,
+        share              REAL,
+        line_length_ft     REAL,
+        distance_ft        REAL,
+        detail_json        TEXT NOT NULL DEFAULT '{}',
+        computed_at        TEXT NOT NULL,
+        PRIMARY KEY (parcel_load_id, constraint_load_id, gpin)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_parcel_constraints_gpin ON parcel_constraints(gpin)",
+    """
+    CREATE VIEW IF NOT EXISTS parcel_constraints_effective AS
+    SELECT pc.*, cl.loaded_at AS layer_loaded_at, cl.source_url
+    FROM parcel_constraints pc
+    JOIN constraint_loads cl ON cl.load_id = pc.constraint_load_id AND cl.is_active = 1
+    JOIN parcel_loads pl ON pl.load_id = pc.parcel_load_id AND pl.is_active = 1
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS board_action_loads (
+        load_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        layer_key       TEXT NOT NULL,
+        source_url      TEXT NOT NULL,
+        where_clause    TEXT NOT NULL,
+        expected_count  INTEGER NOT NULL,
+        received_count  INTEGER NOT NULL,
+        unique_ids      INTEGER NOT NULL,
+        no_date         INTEGER NOT NULL,
+        actions         INTEGER NOT NULL,
+        content_hash    TEXT NOT NULL,
+        max_date_sub    TEXT,
+        parcel_load_id  INTEGER,
+        loaded_at       TEXT NOT NULL,
+        is_active       INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
+        CHECK (is_active = 0 OR (expected_count = received_count AND received_count = unique_ids))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_board_action_loads_active ON board_action_loads(layer_key) WHERE is_active = 1",
+    """
+    CREATE TABLE IF NOT EXISTS board_actions (
+        load_id        INTEGER NOT NULL REFERENCES board_action_loads(load_id),
+        layer_key      TEXT NOT NULL,
+        pln_id         TEXT NOT NULL,
+        objectids_json TEXT NOT NULL,
+        date_sub       TEXT NOT NULL,
+        pln_type       TEXT,
+        pln_file_no    TEXT,
+        proj_name      TEXT,
+        appl_name      TEXT,
+        deeplink       TEXT,
+        geom_geojson   TEXT NOT NULL,
+        minx REAL NOT NULL, miny REAL NOT NULL, maxx REAL NOT NULL, maxy REAL NOT NULL,
+        lat REAL NOT NULL, lng REAL NOT NULL,
+        gpins_json     TEXT NOT NULL,
+        PRIMARY KEY (load_id, pln_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS board_action_parcels (
+        load_id INTEGER NOT NULL REFERENCES board_action_loads(load_id),
+        pln_id  TEXT NOT NULL,
+        gpin    TEXT NOT NULL,
+        PRIMARY KEY (load_id, pln_id, gpin)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_board_action_parcels_gpin ON board_action_parcels(gpin)",
+    """
+    CREATE VIEW IF NOT EXISTS board_actions_effective AS
+    SELECT a.*, l.loaded_at AS layer_loaded_at FROM board_actions a
+    JOIN board_action_loads l ON l.load_id = a.load_id AND l.is_active = 1
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1556,6 +1672,9 @@ def init_db(db_path: Path | str | None = None) -> None:
                 conn.execute(statement)
         if current_version < 11:
             for statement in _SCHEMA_V11_STATEMENTS:
+                conn.execute(statement)
+        if current_version < 12:
+            for statement in _SCHEMA_V12_STATEMENTS:
                 conn.execute(statement)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "

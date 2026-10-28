@@ -77,6 +77,13 @@ EXTRACTS = {
     "clerk_pc_links": "SELECT * FROM clerk_pc_links ORDER BY clerk_item_key, pc_item_key",
     "pc_council_outcomes": "SELECT * FROM pc_council_outcomes ORDER BY pc_item_key",
     "clerk_index_checks": "SELECT * FROM clerk_index_checks ORDER BY check_id",
+    "constraint_loads": "SELECT * FROM constraint_loads ORDER BY load_id",
+    "parcel_constraints": """SELECT gpin, layer_key, overlap_sqft, share, line_length_ft, distance_ft, detail_json
+        FROM parcel_constraints_effective ORDER BY gpin, layer_key""",
+    "board_action_loads": "SELECT * FROM board_action_loads ORDER BY load_id",
+    # no applicant or project names (they include private individuals)
+    "board_actions": """SELECT layer_key, pln_id, date_sub, pln_type, gpins_json FROM board_actions_effective
+        ORDER BY layer_key, date_sub""",
     "review_audit": """SELECT audit_id, import_id, review_table, subject_json, action, old_json, new_json,
         review_author, recorded_at FROM review_audit ORDER BY audit_id""",
     "review_imports": """SELECT import_id, kind, source_file, source_sha256, derived_file, derived_sha256,

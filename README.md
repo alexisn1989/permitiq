@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **498 tests**, all passing, zero live network calls |
+| **Test suite** | **508 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -456,6 +456,48 @@ python scripts/run_vb_pipeline.py --phase full --pc --clerk ...
 - **Names:** "APPLICANT / OWNER" parts are checked one by one (and unspaced `&` splits parties). Only organizations are shown. Subject text and raw blocks are stored for review and never served.
 - **Where to see it:** the "City Council action (Clerk's record)" card on the hearing and filing lead screens, the map popups, and `GET /api/land-use/council-actions[/{key}]`.
 
+### Site constraints (screening, Virginia Beach)
+
+City GIS layers that stop, delay or add cost to a project, measured per parcel next to flood and Council data (`ingest/constraints.py`).
+
+```bash
+python scripts/load_constraints.py --inspect     # layer metadata and counts; writes nothing
+python scripts/load_constraints.py --all         # each layer complete or not at all
+python scripts/load_board_actions.py --all       # CBPA / Wetlands Board / Historical Review Board history
+python scripts/tag_parcel_constraints.py         # lead parcels (--all: every parcel)
+python scripts/run_vb_pipeline.py --phase full --constraints ...
+```
+
+- **Layers** (city GIS):
+  - Chesapeake Bay RPA boundary;
+  - Southern Watersheds buffer;
+  - floodplains subject to special restrictions;
+  - shrink-swell soils, city soils;
+  - Historic and Cultural Overlay, Historic Kempsville Overlay;
+  - dam break inundation zones.
+- **Board history:** 2,697 CBPA Board actions, 2,117 Wetlands Board actions and 154 Historical Review Board actions, merged per Accela record. Each parcel's history with those boards is shown.
+- **Measured, never estimated:**
+  - polygon layers give acres and share of the parcel;
+  - line layers give the length inside the parcel and the distance to it;
+  - soils give the mapped soil names with acres.
+  
+  There are no unit-yield or density estimates and no invented scores.
+- **The RPA layer is a boundary line, not buffer areas.** Profiled on the real data: 2,060 untyped lines, 1 closed ring; polygonizing gives 72 fragments about 49 ft wide. So the card says "the RPA boundary crosses / lies N ft from this parcel" and never claims RPA acres.
+- **Complete loads only:**
+  - each layer's count and OBJECTID set must match;
+  - a layer that fails leaves the others loaded and the step exits 3 (a gap);
+  - measurements are keyed by (parcel load, layer load), so a new load reads as not measured until re-tagged.
+- **Checked against the source:** on 4 lead parcels × 4 layers, the city's own server-side intersection queries agreed with every measurement.
+- **Not covered, said so on every card:**
+  - sewer / water capacity (no public data);
+  - hydric soils and water table (USDA), NWI wetlands, VDOT traffic, state and National Register historic boundaries: these plug into the same engine once their hosts are reachable.
+- **Where to see it:**
+  - the "Site constraints (screening)" card on the hearing and filing lead screens;
+  - the map's "Site constraint layer" selector;
+  - `GET /api/parcels/{gpin}/constraints`;
+  - constraint columns in `filing_leads.csv` and `pc_leads.csv`;
+  - a quality-report section and checklist line.
+
 ---
 
 ## API
@@ -486,6 +528,8 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/land-use/pc-items/{key}` | One item: request, parcels and flood class by GPIN, recommendation and vote, source PDFs, possible Council decisions |
 | `GET /api/land-use/filings` | Applications as filed, with stage; filters `stage`, `pln_type`, `filed_from/to`; active load summary |
 | `GET /api/land-use/filings/{pln_id}` | One application: boundary, parcels, Planning Commission items, Council actions, same-parcel permits since filing |
+| `GET /api/parcels/{gpin}/constraints` | Site constraints of one parcel: measured facts per layer, board history, layers checked, what is not covered |
+| `GET /api/constraints/{layer}.geojson?bbox=` | One constraint layer inside a map view (display only; 413 above 2,000 features) |
 | `GET /api/land-use/council-actions` | Land-use items from the Clerk's Summary of Council Actions; filters `outcome`, `district`, `date_from/to`; archive coverage |
 | `GET /api/land-use/council-actions/{key}` | One Council action: outcome, tally, addresses, the PC items it decides (or possibly decides), the Clerk's page |
 | `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
@@ -500,7 +544,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**498 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**508 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

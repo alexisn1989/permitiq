@@ -324,11 +324,30 @@ def clerk_quality(conn) -> dict | None:
     }
 
 
+def constraint_quality(conn) -> dict | None:
+    """Site-constraint layers and board histories: what is loaded, complete, and
+    how many parcels touch each layer; None if nothing is loaded."""
+    from ingest import constraints  # local import, as in pc_quality
+    layers = {r["layer_key"]: dict(r) for r in conn.execute(
+        "SELECT l.layer_key, l.expected_count, l.received_count, l.features, l.loaded_at, "
+        "(SELECT COUNT(*) FROM parcel_constraints_effective pc WHERE pc.constraint_load_id = l.load_id) AS parcels "
+        "FROM constraint_loads l WHERE l.is_active = 1")}
+    boards = {r["layer_key"]: dict(r) for r in conn.execute(
+        "SELECT layer_key, expected_count, received_count, actions, no_date, max_date_sub, loaded_at "
+        "FROM board_action_loads WHERE is_active = 1")}
+    if not layers and not boards:
+        return None
+    return {"layers": layers, "boards": boards,
+            "missing_layers": sorted(set(constraints.LAYERS) - set(layers)),
+            "missing_boards": sorted(set(constraints.BOARD_LAYERS) - set(boards))}
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
             "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn),
-            "filings": filing_quality(conn), "council_actions": clerk_quality(conn)}
+            "filings": filing_quality(conn), "council_actions": clerk_quality(conn),
+            "site_constraints": constraint_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -431,6 +450,14 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
             f"{sum(y['stored'] for y in years)} summaries ({cq['date_range'][0]}–{cq['date_range'][1]}), "
             f"{cq['land_use_items']} land-use items; Council stage for {cq['pc_items_with_council_stage']} of "
             f"{cq['pc_items']} PC items" + (f"; incomplete: {', '.join(short)}" if short else ""))
+    sq = q.get("site_constraints")
+    if sq is None:
+        add("Constraint layers complete", None, "no site-constraint layers loaded")
+    else:
+        missing = sq["missing_layers"] + sq["missing_boards"]
+        add("Constraint layers complete", not missing,
+            f"{len(sq['layers'])} layers and {len(sq['boards'])} board histories loaded complete"
+            + (f"; not loaded: {', '.join(missing)}" if missing else ""))
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

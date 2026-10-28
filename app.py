@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
+from ingest import constraints as constraints_mod, council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
     pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
@@ -849,9 +849,10 @@ def pc_item_detail(item_key: str):
             "WHERE c.item_key = ? ORDER BY d.meeting_date", (item_key,))]
         parcels = pc_hearings.item_parcels(conn, item["gpins"])
         actions = _council_actions(conn, item_key)
+        site = constraints_mod.public_constraints(conn, sorted({p["gpin"] for p in parcels if p.get("gpin")}))
         as_of = quality.data_as_of(conn)
     item.update({
-        "council": _council(row), "council_actions": actions, "council_notice": COUNCIL_NOTICE,
+        "council": _council(row), "council_actions": actions, "council_notice": COUNCIL_NOTICE, "site_constraints": site,
         "status": row["status"], "status_source": row["status_source"],
         "recommendation": {"raw": row["recommendation_raw"], "normalized": row["minutes_recommendation"],
                            "aye": row["aye"], "nay": row["nay"], "abstain": row["abstain"], "absent": row["absent"],
@@ -931,6 +932,7 @@ def filing_detail(pln_id: str):
             "JOIN permits p ON p.id = pp.permit_id WHERE p.applied_date >= ? ORDER BY p.applied_date LIMIT 50",
             (r["gpins_json"], r["date_sub"]))]
         out["geometry"] = json.loads(r["geom_geojson"])
+        out["site_constraints"] = constraints_mod.public_constraints(conn, out["gpins"])
         out["data_as_of"] = quality.data_as_of(conn)
     out["notice"] = FILING_NOTICE
     return out
@@ -987,6 +989,12 @@ def council_action_detail(item_key: str):
         out["addresses"] = [dict(x) for x in conn.execute(
             "SELECT raw_text, house_from, house_to, street_norm FROM clerk_item_addresses WHERE item_key = ? "
             "ORDER BY seq", (item_key,))]
+        gpins = set()
+        for x in out["pc_items"]:
+            if not x["ambiguous"]:
+                g = conn.execute("SELECT gpins_json FROM pc_items WHERE item_key = ?", (x["pc_item_key"],)).fetchone()
+                gpins |= {p["gpin"] for p in pc_hearings.item_parcels(conn, json.loads(g[0])) if p.get("gpin")}
+        out["site_constraints"] = constraints_mod.public_constraints(conn, sorted(gpins))
     out["notice"] = COUNCIL_NOTICE
     return out
 
@@ -1113,6 +1121,44 @@ def parcel_outline(gpin: str, request: Request):
     if etag in {t.strip().removeprefix("W/").strip('"') for t in inm.split(",")}:
         return Response(status_code=304, headers=headers)
     return Response(payload, media_type="application/geo+json", headers=headers)
+
+
+CONSTRAINT_BBOX_MAX = 2000
+
+
+@app.get("/api/constraints/{layer_key}.geojson")
+def constraint_layer_bbox(layer_key: str, bbox: str = Query(..., description="minx,miny,maxx,maxy (lon/lat)")):
+    """Features of one active constraint layer inside a map view, for display only
+    (allowlisted attributes; 413 above CONSTRAINT_BBOX_MAX features -- zoom in)."""
+    if layer_key not in constraints_mod.LAYERS:
+        raise HTTPException(404, "unknown constraint layer")
+    try:
+        minx, miny, maxx, maxy = (float(v) for v in bbox.split(","))
+    except ValueError:
+        raise HTTPException(422, "bbox must be minx,miny,maxx,maxy") from None
+    if not (minx < maxx and miny < maxy) or maxx - minx > 1 or maxy - miny > 1:
+        raise HTTPException(422, "bbox must be a valid box of at most 1 degree a side")
+    with _ro() as conn:
+        rows = conn.execute(
+            "SELECT f.feature_id, f.geom_geojson, f.attrs_json FROM constraint_features f JOIN constraint_loads l "
+            "ON l.load_id = f.load_id AND l.is_active = 1 AND l.layer_key = ? WHERE f.maxx >= ? AND f.minx <= ? "
+            "AND f.maxy >= ? AND f.miny <= ? LIMIT ?", (layer_key, minx, maxx, miny, maxy, CONSTRAINT_BBOX_MAX + 1)
+        ).fetchall()
+    if len(rows) > CONSTRAINT_BBOX_MAX:
+        raise HTTPException(413, "too many features in this view: zoom in")
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": r["feature_id"], "properties": json.loads(r["attrs_json"]),
+         "geometry": json.loads(r["geom_geojson"])} for r in rows]}
+
+
+@app.get("/api/parcels/{gpin}/constraints")
+def parcel_constraints_route(gpin: str):
+    """Site constraints of one parcel of the active parcel load (screening estimates)."""
+    with _ro() as conn:
+        if conn.execute("SELECT 1 FROM parcels pa JOIN parcel_loads l ON l.load_id = pa.load_id AND l.is_active = 1 "
+                        "WHERE pa.gpin = ?", (gpin,)).fetchone() is None:
+            raise HTTPException(404, "parcel not in the active parcel load")
+        return {"gpin": gpin, **constraints_mod.public_constraints(conn, [gpin])}
 
 
 def _active_flood_load(conn) -> Optional[sqlite3.Row]:

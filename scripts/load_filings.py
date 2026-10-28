@@ -20,13 +20,12 @@ import argparse
 import json
 import re
 import sys
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
-from ingest import arcgis, filings as F, parcels as P  # noqa: E402
+from ingest import arcgis, filings as F  # noqa: E402
 from ingest.common import fetch_json_retry  # noqa: E402
 
 fetch_json = fetch_json_retry  # indirection so tests can stub the network
@@ -61,34 +60,25 @@ def main(argv=None) -> int:
             print(f"[FATAL] {e}", file=sys.stderr)
             return 1
     where = F.where_since(args.since)
-    stats: Counter = Counter()
-    try:
-        raw = arcgis.fetch_all_by_ids(fetch_json, args.url, where, out_fields=F.OUT_FIELDS, label="filings layer")
-        merged = F.merge(raw, stats)
-    except (arcgis.IncompleteRead, RuntimeError, ValueError) as e:
-        print(f"[FATAL] incomplete or failed read, nothing written: {e}", file=sys.stderr)
-        return 2 if isinstance(e, arcgis.IncompleteRead) else 1
-    if not merged:
-        print("[FATAL] no filings with a date in the window; nothing written", file=sys.stderr)
-        return 1
-    h = F.content_hash(merged)
-    print(f"{args.url}: {len(raw)} records since {args.since} -> {len(merged)} filings; {dict(stats)}")
     with db_module.db() as conn:
-        parcel_load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
-        index = P.load_index(conn, parcel_load["load_id"]) if parcel_load else None
-        if index is None:
+        try:
+            raw, merged, stats, plid = F.read_and_link(fetch_json, conn, args.url, where, "filings layer")
+        except (arcgis.IncompleteRead, RuntimeError, ValueError) as e:
+            print(f"[FATAL] incomplete or failed read, nothing written: {e}", file=sys.stderr)
+            return 2 if isinstance(e, arcgis.IncompleteRead) else 1
+        if not merged:
+            print("[FATAL] no filings with a date in the window; nothing written", file=sys.stderr)
+            return 1
+        h = F.content_hash(merged)
+        print(f"{args.url}: {len(raw)} records since {args.since} -> {len(merged)} filings; {dict(stats)}")
+        if plid is None:
             print("  [warn] no active parcel load: filings are stored without parcels (run load_parcels.py first)")
-        linked = 0
-        for f in merged:
-            f["gpins"] = index.within(f["geom"]) if index else []
-            linked += bool(f["gpins"])
-        print(f"  parcels found for {linked} of {len(merged)} filings")
+        print(f"  parcels found for {sum(1 for f in merged if f['gpins'])} of {len(merged)} filings")
         if args.dry_run:
             print("--dry-run: nothing written")
             return 0
         active = conn.execute("SELECT load_id, content_hash, parcel_load_id FROM filing_loads WHERE is_active = 1"
                               ).fetchone()
-        plid = parcel_load["load_id"] if parcel_load else None
         if active and active["content_hash"] == h and active["parcel_load_id"] == plid:
             print(f"Unchanged: identical to active filing load {active['load_id']}; nothing written")
             return 0

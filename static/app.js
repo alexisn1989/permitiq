@@ -937,3 +937,32 @@ document.addEventListener("click", (e) => {
 
 // ---------- boot ----------
 boot();
+
+// ---------- site constraint layers (screening; display only, by map view) ----------
+const constraintLayer = L.geoJSON(null, { style: { color: "#f97316", weight: 2, fillOpacity: 0.15 } });
+let constraintKey = "";
+
+async function loadConstraintLayer() {
+  constraintLayer.clearLayers();
+  if (!constraintKey) { $("constraint-legend").textContent = ""; return; }
+  const b = map.getBounds();
+  if (b.getEast() - b.getWest() > 1 || b.getNorth() - b.getSouth() > 1) {
+    $("constraint-legend").textContent = "Zoom in to see this layer.";
+    return;
+  }
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(",");
+  try {
+    const fc = await api(`/api/constraints/${encodeURIComponent(constraintKey)}.geojson?bbox=${bbox}`);
+    constraintLayer.addData(fc);
+    $("constraint-legend").textContent = `${fc.features.length} feature(s) in view. City GIS layer; screening, not a determination.`;
+  } catch (err) {
+    $("constraint-legend").textContent = err.message.includes("413") ? "Too many features here: zoom in." : `Layer unavailable: ${err.message}`;
+  }
+}
+
+$("constraint-layer").addEventListener("change", (e) => {
+  constraintKey = e.target.value;
+  if (constraintKey) constraintLayer.addTo(map); else map.removeLayer(constraintLayer);
+  loadConstraintLayer();
+});
+map.on("moveend", () => { if (constraintKey) loadConstraintLayer(); });

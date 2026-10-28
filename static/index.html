@@ -45,6 +45,20 @@
       <div class="flood-legend" id="landuse-legend"></div>
     </section>
 
+    <section class="flood-panel" aria-label="Site constraints">
+      <label class="flood-toggle">Site constraint layer
+        <select id="constraint-layer">
+          <option value="">none</option>
+          <option value="rpa">Chesapeake Bay RPA boundary</option>
+          <option value="southern_watersheds_buffer">Southern Watersheds buffer</option>
+          <option value="special_floodplain">Floodplains with special restrictions</option>
+          <option value="historic_overlay">Historic and Cultural Overlay</option>
+          <option value="shrink_swell_soils">Shrink-swell soils</option>
+          <option value="dam_break">Dam break inundation zones</option>
+        </select></label>
+      <div class="flood-legend" id="constraint-legend"></div>
+    </section>
+
     <section class="flood-panel" aria-label="Applications filed">
       <label class="flood-toggle"><input type="checkbox" id="filing-layer-toggle"> Applications filed</label>
       <div class="flood-legend" id="filing-legend"></div>
@@ -116,6 +130,6 @@
      and do cache them aggressively. Bump ?v=N (here and on style.css above)
      whenever either file changes, or a returning visitor's old cached copy
      will keep running silently with no error. -->
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

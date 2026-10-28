@@ -167,6 +167,8 @@ def main(argv=None) -> int:
     p.add_argument("--clerk", action="store_true",
                    help="also read the City Clerk's Summary of Council Actions -- the official Council outcomes")
     p.add_argument("--clerk-years", default=None, help="years for --clerk, e.g. 2021-2026 (default 2021-this year)")
+    p.add_argument("--constraints", action="store_true",
+                   help="also load the site-constraint layers and board histories and measure lead parcels")
     p.add_argument("--filings", action="store_true",
                    help="also load applications as filed (the city's filing layer) -- the earliest leads")
     args = p.parse_args(argv)
@@ -234,6 +236,11 @@ def main(argv=None) -> int:
             else:
                 r.skip("load_filings", "applications as filed not requested (--filings)")
             r.step("parcel_flood", "tag_parcel_flood.py", [])
+            if args.constraints:  # exit 3 = a layer could not be read completely: a gap, never success
+                r.step("constraint_layers", "load_constraints.py", ["--all"], gap_codes={3})
+                r.step("board_actions", "load_board_actions.py", ["--all"], gap_codes={3})
+            else:
+                r.skip("constraint_layers", "site constraints not requested (--constraints)")
             r.step("tag_decision_points", "tag_flood_zones.py", ["--decisions"])
             r.step("link", "link_decisions_permits.py", [*lu, "--reports-dir", run_dir])
             if args.pc:
@@ -245,6 +252,8 @@ def main(argv=None) -> int:
                 r.step("pc_link", "link_pc_council.py", [])
             else:
                 r.skip("pc_hearings", "Planning Commission hearings not requested (--pc)")
+            if args.constraints:  # after filings, PC items and board actions: their parcels are measured
+                r.step("tag_parcel_constraints", "tag_parcel_constraints.py", [])
             if args.clerk:  # after the PC items: Council outcomes are linked to them
                 r.step("clerk_summaries", "ingest_clerk_summaries.py",
                        ["--reports-dir", run_dir, *(["--years", args.clerk_years] if args.clerk_years else [])],

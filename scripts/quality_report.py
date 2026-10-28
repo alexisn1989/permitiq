@@ -105,6 +105,20 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"- Possible matches not used for a stage: {cq['ambiguous_links'] or 'none'}",
                   f"- Council decisions (vote data) matched to a Clerk item: {cq['decisions_checked']}",
                   "- Outcomes are read from scanned pages (OCR text); per-member votes are not read.", ""]
+    sq = q.get("site_constraints")
+    if sq:
+        lines += ["## Site constraint layers (screening)", "",
+                  "| layer | features (expected = received) | loaded at | lead parcels touching |", "|---|---:|---|---:|"]
+        lines += [f"| {k} | {v['features']} ({v['expected_count']} = {v['received_count']}) | {v['loaded_at']} | "
+                  f"{v['parcels']} |" for k, v in sorted(sq["layers"].items())]
+        lines += ["", "| board history | actions (records read) | without a date | newest |", "|---|---:|---:|---|"]
+        lines += [f"| {k} | {v['actions']} ({v['received_count']}) | {v['no_date']} | {v['max_date_sub']} |"
+                  for k, v in sorted(sq["boards"].items())]
+        lines += ["", "- The RPA layer is the city's boundary line: parcels are reported as crossed by it or within "
+                      "100 ft of it, never as RPA acres.",
+                  "- Screening estimates from city GIS layers, not determinations. Not covered: sewer / water "
+                  "capacity (no public data); hydric soils, NWI wetlands, VDOT, state / National Register "
+                  "historic boundaries (pending source access).", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

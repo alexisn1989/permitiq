@@ -33,7 +33,8 @@ READ_ROUTES = ["/health", "/api/permits", "/api/stats", "/api/facets", "/api/dat
                "/api/quality", "/api/data-as-of", "/api/audit/decision_outcome_review?decision_key=vb:M1:R1",
                "/api/land-use/pc-items", "/api/land-use/pc-items/vbpc:2026-08-12:2",
                "/api/land-use/filings", "/api/land-use/filings/2026-PCCC-00001",
-               "/api/land-use/council-actions", "/api/land-use/council-actions/vbcc:2025-03-18:K.2."]
+               "/api/land-use/council-actions", "/api/land-use/council-actions/vbcc:2025-03-18:K.2.",
+               "/api/parcels/14892864850000/constraints", "/api/constraints/rpa.geojson?bbox=-76.1,36.8,-76.0,36.9"]
 
 
 def test_importing_app_creates_no_database_file(tmp_path):

@@ -136,6 +136,33 @@
   }
 
   // item: GET /api/land-use/pc-items/{key}. Escaped HTML for the Planning Commission lead page.
+  const BOARD_TEXT = { cbpa: "Chesapeake Bay Preservation Area Board", wetlands_board: "Wetlands Board",
+    hrb: "Historical Review Board" };
+
+  // sc: the site_constraints block of a lead (GET /api/parcels/{gpin}/constraints shape). Escaped HTML.
+  function buildConstraintsHtml(sc) {
+    if (!sc) return "";
+    const rows = (sc.constraints || []).map((c) => {
+      const by = c.classification ? "" : (c.detail && c.detail.by || []).slice(0, 4).map((b) =>
+        `${esc(b.name)} ${esc(fmtNum(b.acres))} ac`).join("; ");
+      return `<tr><td>${esc(c.label)}</td><td>${esc(c.fact)}${by ? `<br><span class="muted small">${by}</span>` : ""}</td>
+        <td>${esc(c.gpin)}</td><td class="muted small">${esc((c.as_of || "").slice(0, 10))}</td></tr>`;
+    }).join("");
+    const hist = (sc.board_history || []).slice(0, 12).map((h) =>
+      `<li>${esc(h.date_sub)} — ${esc(BOARD_TEXT[h.board] || h.board)}${h.pln_type ? ` (${esc(h.pln_type)})` : ""} · ${esc(h.pln_id)}${h.applicant && h.applicant.name ? ` · ${esc(h.applicant.name)}` : ""}</li>`).join("");
+    const checked = (sc.layers_checked || []).map((l) => esc(l.label)).join(", ");
+    return `
+      <section class="card">
+        <h3>Site constraints (screening)</h3>
+        ${rows ? `<table class="grid"><thead><tr><th>Layer</th><th>Measured on the parcel</th><th>Parcel</th><th>Layer as of</th></tr></thead><tbody>${rows}</tbody></table>`
+          : `<p class="muted">${checked ? "None of the checked layers touches these parcels." : "No constraint layers loaded yet."}</p>`}
+        <h3>History with the city's boards on these parcels</h3>
+        ${hist ? `<ul>${hist}</ul>` : `<p class="muted">${(sc.boards_checked || []).length ? "No prior board actions found." : "Board histories not loaded yet."}</p>`}
+        <p class="muted small">Layers checked: ${checked || "none"}. Not covered: ${esc((sc.not_covered || []).join("; "))}.</p>
+        <p class="muted small">${esc(sc.notice || "")}</p>
+      </section>`;
+  }
+
   // actions: Clerk items linked to a PC item (council_actions in the API). Escaped HTML.
   function buildCouncilHtml(council, actions, notice) {
     const rows = (actions || []).map((a) => {
@@ -195,6 +222,7 @@
         <h3>Parcels</h3>
         ${parcels ? `<table class="grid"><thead><tr><th>Agenda GPIN</th><th>Parcel</th><th>Zoning · use</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No GPIN on the agenda.</p>'}
       </section>
+      ${buildConstraintsHtml(it.site_constraints)}
       ${buildCouncilHtml(it.council, it.council_actions, it.council_notice)}
       <section class="card">
         <h3>Possible City Council decisions (vote data)</h3>
@@ -238,6 +266,7 @@
         <h3>Parcels inside the application boundary</h3>
         ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Zoning · use</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No parcel found inside the boundary.</p>'}
       </section>
+      ${buildConstraintsHtml(f.site_constraints)}
       <section class="card">
         <h3>Planning Commission</h3>
         ${hearings ? `<ul>${hearings}</ul>` : '<p class="muted">No hearing found yet for this record.</p>'}
@@ -252,7 +281,7 @@
   }
 
   const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml,
-    buildCouncilHtml };
+    buildCouncilHtml, buildConstraintsHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

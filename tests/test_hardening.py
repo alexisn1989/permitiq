@@ -656,6 +656,8 @@ def _q(**over):
          "council_actions": {"coverage": {"verified": True, "years": [
              {"year": 2026, "listed": 2, "stored": 2, "status": "ok"}]}, "date_range": ["2026-01-06", "2026-10-20"],
              "land_use_items": 5, "pc_items_with_council_stage": 2, "pc_items": 3},
+         "site_constraints": {"layers": {"rpa": {}}, "boards": {"cbpa": {}}, "missing_layers": [],
+                              "missing_boards": []},
          "accuracy": {"freshness": "fresh", "results": {
              "links_by_tier": {"gpin_exact": dict(tier), "address": {"population": 4, "adjudicated": 4}},
              "leads": {"population": 10, "adjudicated": 10, "cant_tell": 1},

@@ -21,13 +21,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db as db_module  # noqa: E402
-from ingest import pc_hearings  # noqa: E402
+from ingest import constraints as C, pc_hearings  # noqa: E402
 
 BASE = Path(__file__).resolve().parent.parent
 LEAD_STATUSES = ("scheduled", "recommended_approval", "deferred")
 COLUMNS = ["stage", "item_key", "hearing_date", "status", "status_source", "applicants", "applicants_withheld",
            "owners", "owners_withheld", "request", "addresses", "gpins", "council_district", "accela_records",
-           "staff_planner", "description", "size_from_description", "agenda_url"]
+           "staff_planner", "description", "size_from_description", "agenda_url", *C.CSV_COLUMNS]
 
 
 def main(argv=None) -> int:
@@ -43,6 +43,8 @@ def main(argv=None) -> int:
                 f"WHERE i.city_initiated = 0 AND s.n_council_candidates = 0 AND s.status IN "
                 f"({','.join('?' * len(LEAD_STATUSES))}) ORDER BY i.meeting_date DESC, i.item_key", LEAD_STATUSES)]
             cov = pc_hearings.coverage(conn)
+            site = {r["item_key"]: C.csv_summary(conn, [x["gpin"] for x in pc_hearings.item_parcels(
+                conn, json.loads(r["gpins_json"])) if x.get("gpin")]) for r in rows}
     except db_module.DatabaseNotReady as e:
         print(f"[FATAL] database not ready ({e}); run scripts/migrate_db.py", file=sys.stderr)
         return 1
@@ -58,7 +60,7 @@ def main(argv=None) -> int:
                         it["request"] or "", it["addresses"] or "", " ".join(it["gpins"]),
                         it["council_district_text"] or "", ", ".join(it["accela_records"]), it["staff_planner"] or "",
                         it["description"] or "", "; ".join(x["text"] for x in it["size_from_description"]),
-                        r["agenda_url"]])
+                        r["agenda_url"], *site[r["item_key"]].values()])
     (args.out / "pc_coverage.json").write_text(json.dumps(cov, indent=1), encoding="utf-8")
     print(f"Wrote {args.out / 'pc_leads.csv'} ({len(rows)} leads); agendas for {cov['agenda_found']} of "
           f"{cov['months']} months ({'verified' if cov['verified'] else 'coverage unverified'})")

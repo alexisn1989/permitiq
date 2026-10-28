@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from datetime import datetime, timezone
 
 from shapely import make_valid, union_all
 from shapely.geometry import mapping, shape
 
-from ingest import lead_facts
+from ingest import arcgis, lead_facts, parcels as P
 
 LAYER_URL = ("https://geo.vbgov.com/mapservices/rest/services/Planning_and_Development/"
              "Planning_and_Development/MapServer/1")
@@ -95,6 +96,22 @@ def merge(features: list[dict], stats) -> list[dict]:
             "geom": geom, "bounds": (minx, miny, maxx, maxy), "lat": pt.y, "lng": pt.x,
         })
     return out
+
+
+def read_and_link(fetch, conn, url: str, where: str, label: str) -> tuple[list[dict], list[dict], Counter, int | None]:
+    """Every record of an actions layer (this layer's schema: the filings layer and
+    the CBPA / Wetlands Board / Historical Review Board action layers), complete
+    or not at all (arcgis.IncompleteRead), merged per Accela record, with the
+    parcels inside each boundary from the active parcel load.
+    Returns (raw, merged, stats, parcel_load_id)."""
+    raw = arcgis.fetch_all_by_ids(fetch, url, where, out_fields=OUT_FIELDS, label=label)
+    stats: Counter = Counter()
+    merged = merge(raw, stats)
+    parcel_load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1").fetchone()
+    index = P.load_index(conn, parcel_load["load_id"]) if parcel_load else None
+    for f in merged:
+        f["gpins"] = index.within(f["geom"]) if index else []
+    return raw, merged, stats, parcel_load["load_id"] if parcel_load else None
 
 
 def content_hash(filings: list[dict]) -> str:
