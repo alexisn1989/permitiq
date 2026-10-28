@@ -116,7 +116,9 @@ LAYERS = {l.key: l for l in (
                                       "drclassdcd"), "muname", classification=True, source="sda"),
     Layer("nwi_wetlands", f"{NWI}/0", "polygon_share", "Mapped wetlands (USFWS National Wetlands Inventory)",
           "Wetlands mapped from imagery by USFWS. Not a jurisdictional delineation: a wetland delineation "
-          "decides what is regulated.", ("ATTRIBUTE", "WETLAND_TYPE"), "WETLAND_TYPE", bbox=True),
+          "decides what is regulated. Open estuarine / marine deepwater (the bay and ocean, one 2.75-million-acre "
+          "polygon the service cannot return) is excluded.", ("ATTRIBUTE", "WETLAND_TYPE"), "WETLAND_TYPE", bbox=True,
+          where="WETLAND_TYPE <> 'Estuarine and Marine Deepwater'"),
     Layer("nrhp_polygons", f"{NRHP}/1", "polygon_share", "National Register of Historic Places property",
           "Listed property boundary (NPS). Many boundaries are approximate (circumscribed); federally funded or "
           "permitted work triggers Section 106 review.", ("RESNAME", "NRIS_Refnum", "ResType", "BND_TYPE"),
