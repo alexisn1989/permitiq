@@ -30,10 +30,10 @@ def main(argv=None) -> int:
     try:
         with db_module.db_readonly() as conn:
             rows = [dict(r) for r in conn.execute(
-                "SELECT f.*, s.pc_status, s.hearing_date, s.permits_after_filing FROM filings f "
+                "SELECT f.*, s.stage, s.hearing_date, s.permits_after_filing FROM filings f "
                 "JOIN filing_loads l ON l.load_id = f.load_id AND l.is_active = 1 "
                 "JOIN filing_status s ON s.pln_id = f.pln_id "
-                "WHERE COALESCE(s.pc_status, 'filed') IN ('filed', 'scheduled') ORDER BY f.date_sub DESC, f.pln_id")]
+                "WHERE s.stage IN ('filed', 'scheduled') ORDER BY f.date_sub DESC, f.pln_id")]
     except db_module.DatabaseNotReady as e:
         print(f"[FATAL] database not ready ({e}); run scripts/migrate_db.py", file=sys.stderr)
         return 1
@@ -43,7 +43,7 @@ def main(argv=None) -> int:
         w.writerow(COLUMNS)
         for r in rows:
             f = F.public_filing(r)
-            w.writerow([r["pc_status"] or "filed", f["pln_id"], f["date_sub"], f["plan_type_label"],
+            w.writerow([r["stage"], f["pln_id"], f["date_sub"], f["plan_type_label"],
                         f["applicant"]["name"] or "", int(f["applicant"]["withheld"]), f["project"]["name"] or "",
                         " ".join(f["gpins"]), r["hearing_date"] or "", r["permits_after_filing"], f["deeplink"] or ""])
     print(f"Wrote {args.out / 'filing_leads.csv'} ({len(rows)} applications filed, not yet heard)")

@@ -283,8 +283,7 @@ def filing_quality(conn) -> dict | None:
     return {
         "load": {k: load[k] for k in ("where_clause", "expected_count", "received_count", "filings", "no_date",
                                       "max_date_sub", "loaded_at", "parcel_load_id")},
-        "by_stage": dict(conn.execute("SELECT COALESCE(pc_status, 'filed'), COUNT(*) FROM filing_status GROUP BY 1"
-                                      ).fetchall()),
+        "by_stage": dict(conn.execute("SELECT stage, COUNT(*) FROM filing_status GROUP BY 1").fetchall()),
         "with_parcels": one("SELECT COUNT(*) FROM filings WHERE load_id = ? AND gpins_json != '[]'", load["load_id"]),
         "filed_over_6_months_no_hearing": one(
             "SELECT COUNT(*) FROM filing_status WHERE pc_status IS NULL AND date_sub < date('now', '-6 months')"),
@@ -293,11 +292,40 @@ def filing_quality(conn) -> dict | None:
     }
 
 
+def clerk_quality(conn) -> dict | None:
+    """City Clerk's Summary of Council Actions: archive coverage per year,
+    parse results, and how many PC items reached a Council stage; None if
+    no summary is stored."""
+    if not conn.execute("SELECT 1 FROM clerk_documents LIMIT 1").fetchone():
+        return None
+    from ingest import council_actions  # local import, as in pc_quality
+    one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+    lu = "FROM clerk_items WHERE is_land_use = 1"
+    return {
+        "coverage": council_actions.coverage(conn),
+        "documents_by_status": dict(conn.execute("SELECT parse_status, COUNT(*) FROM clerk_documents GROUP BY 1"
+                                                 ).fetchall()),
+        "date_range": list(conn.execute("SELECT MIN(meeting_date), MAX(meeting_date) FROM clerk_documents").fetchone()),
+        "land_use_items": one(f"SELECT COUNT(*) {lu}"),
+        "land_use_by_outcome": dict(conn.execute(f"SELECT outcome, COUNT(*) {lu} GROUP BY 1").fetchall()),
+        "tally_not_readable": one(f"SELECT COUNT(*) {lu} AND outcome != 'unmapped' AND aye IS NULL"),
+        "no_address": one(f"SELECT COUNT(*) {lu} AND item_key NOT IN (SELECT item_key FROM clerk_item_addresses)"),
+        "label_not_readable": one(f"SELECT COUNT(*) {lu} AND item_label IS NULL"),
+        "pc_items": one("SELECT COUNT(*) FROM pc_items"),
+        "pc_items_with_council_stage": one("SELECT COUNT(*) FROM pc_council_outcomes"),
+        "pc_items_by_council_stage": dict(conn.execute("SELECT stage, COUNT(*) FROM pc_council_outcomes GROUP BY 1"
+                                                       ).fetchall()),
+        "ambiguous_links": dict(conn.execute("SELECT reason, COUNT(*) FROM clerk_pc_links WHERE ambiguous = 1 "
+                                             "GROUP BY 1").fetchall()),
+        "decisions_checked": one("SELECT COUNT(DISTINCT decision_key) FROM clerk_decision_links"),
+    }
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
             "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn),
-            "filings": filing_quality(conn)}
+            "filings": filing_quality(conn), "council_actions": clerk_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -379,6 +407,16 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
         add("Filing load complete", ld["expected_count"] == ld["received_count"],
             f"{ld['received_count']} of {ld['expected_count']} records ({ld['where_clause']}) -> {ld['filings']} "
             f"filings; parcels for {fq['with_parcels']}; newest filed {ld['max_date_sub']}")
+    cq = q.get("council_actions")
+    if cq is None:
+        add("Council outcomes (Clerk) coverage verified", None, "the Clerk's Summary of Council Actions not read")
+    else:
+        years = cq["coverage"]["years"]
+        short = [f"{y['year']} ({y['stored']}/{y['listed']})" for y in years if y["status"] != "ok"]
+        add("Council outcomes (Clerk) coverage verified", cq["coverage"]["verified"],
+            f"{sum(y['stored'] for y in years)} summaries ({cq['date_range'][0]}–{cq['date_range'][1]}), "
+            f"{cq['land_use_items']} land-use items; Council stage for {cq['pc_items_with_council_stage']} of "
+            f"{cq['pc_items']} PC items" + (f"; incomplete: {', '.join(short)}" if short else ""))
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

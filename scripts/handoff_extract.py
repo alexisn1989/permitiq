@@ -65,8 +65,18 @@ EXTRACTS = {
     "pc_council_candidates": "SELECT * FROM pc_council_candidates ORDER BY item_key, decision_key",
     # no applicant or project names (they include private individuals); the layer is public at its URL
     "filings": """SELECT f.pln_id, f.date_sub, f.pln_type, f.gpins_json, s.pc_status, s.hearing_date,
-        s.n_council_candidates, s.permits_after_filing FROM filings f JOIN filing_status s ON s.pln_id = f.pln_id
-        ORDER BY f.date_sub""",
+        s.n_council_candidates, s.permits_after_filing, s.stage, s.council_date FROM filings f
+        JOIN filing_status s ON s.pln_id = f.pln_id ORDER BY f.date_sub""",
+    # no subject, applicant text or raw blocks (they carry names); the Clerk's pages are public at their links
+    "clerk_documents": """SELECT entry_id, year, name, meeting_date, page_count, pages_with_text, text_sha256,
+        parser_version, parse_status, n_items, n_land_use, warnings_json FROM clerk_documents ORDER BY meeting_date""",
+    "clerk_items": """SELECT item_key, entry_id, meeting_date, page, item_label, label_certain, request_types_json,
+        council_district, motion_raw, outcome, deferred_to, aye, nay, warnings_json FROM clerk_items
+        WHERE is_land_use = 1 ORDER BY meeting_date, item_key""",
+    "clerk_item_addresses": "SELECT * FROM clerk_item_addresses ORDER BY item_key, seq",
+    "clerk_pc_links": "SELECT * FROM clerk_pc_links ORDER BY clerk_item_key, pc_item_key",
+    "pc_council_outcomes": "SELECT * FROM pc_council_outcomes ORDER BY pc_item_key",
+    "clerk_index_checks": "SELECT * FROM clerk_index_checks ORDER BY check_id",
     "review_audit": """SELECT audit_id, import_id, review_table, subject_json, action, old_json, new_json,
         review_author, recorded_at FROM review_audit ORDER BY audit_id""",
     "review_imports": """SELECT import_id, kind, source_file, source_sha256, derived_file, derived_sha256,

@@ -86,6 +86,25 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"- Filed over 6 months ago with no hearing found: {fq['filed_over_6_months_no_hearing']} "
                   "(the layer has no status: these may be withdrawn or still in review)",
                   "- A filed application is not an approval.", ""]
+    cq = q.get("council_actions")
+    if cq:
+        years = cq["coverage"]["years"]
+        lines += ["## City Council actions (Clerk's Summary of Council Actions)", "",
+                  f"{sum(y['stored'] for y in years)} summaries stored ({cq['date_range'][0]}–{cq['date_range'][1]}); "
+                  + ("every summary listed in the Clerk's archive for those years was read."
+                     if cq["coverage"]["verified"] else "**coverage incomplete** — see years below."), "",
+                  "| year | listed | stored | status |", "|---|---:|---:|---|"]
+        lines += [f"| {y['year']} | {y['listed']} | {y['stored']} | {y['status']} |" for y in years]
+        lines += ["",
+                  f"- Land-use items: {cq['land_use_items']}; by outcome: {cq['land_use_by_outcome']}",
+                  f"- Read with gaps (OCR): tally not readable {cq['tally_not_readable']}, no street address "
+                  f"{cq['no_address']}, item label not readable {cq['label_not_readable']} (listed in "
+                  "clerk_parse_review.csv)",
+                  f"- Planning Commission items with a Council stage: {cq['pc_items_with_council_stage']} of "
+                  f"{cq['pc_items']}; {cq['pc_items_by_council_stage']}",
+                  f"- Possible matches not used for a stage: {cq['ambiguous_links'] or 'none'}",
+                  f"- Council decisions (vote data) matched to a Clerk item: {cq['decisions_checked']}",
+                  "- Outcomes are read from scanned pages (OCR text); per-member votes are not read.", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

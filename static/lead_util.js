@@ -111,6 +111,20 @@
     recommendation_unmapped: "Recommendation recorded but not recognized — see the minutes",
     no_recommendation_found: "Minutes found, but no recommendation for this item",
   };
+  // Council stages come from the City Clerk's Summary of Council Actions (the official record)
+  const COUNCIL_STAGE_TEXT = {
+    council_approved: "Approved by City Council",
+    council_approved_with_conditions: "Approved by City Council, with conditions",
+    council_denied: "Denied by City Council",
+    council_withdrawn: "Withdrawn at City Council",
+    council_deferred: "Deferred by City Council",
+    council_conflicting: "City Council actions on this item differ — see the Clerk's record",
+  };
+  const OUTCOME_TEXT = {
+    approved: "Approved", approved_with_conditions: "Approved with conditions", denied: "Denied",
+    deferred: "Deferred", deferred_indefinitely: "Deferred indefinitely", withdrawn: "Withdrawn",
+    unmapped: "Not recognized",
+  };
   const FLOOD_SHORT = { sfha_v: "SFHA – coastal V/VE", sfha_a: "SFHA – A/AE", shaded_x: "Shaded X (0.2%)",
     matched_non_sfha: "Outside the SFHA", screening_sliver: "Outside the SFHA (sliver)", no_polygon: "No FEMA polygon" };
 
@@ -122,6 +136,30 @@
   }
 
   // item: GET /api/land-use/pc-items/{key}. Escaped HTML for the Planning Commission lead page.
+  // actions: Clerk items linked to a PC item (council_actions in the API). Escaped HTML.
+  function buildCouncilHtml(council, actions, notice) {
+    const rows = (actions || []).map((a) => {
+      const tally = a.aye == null ? "tally not readable" : `${esc(a.aye)}–${esc(a.nay)}`;
+      const defer = a.deferred_to ? ` to ${esc(a.deferred_to)}` : "";
+      const names = a.applicant && a.applicant.names.length ? esc(a.applicant.names.join("; ")) : "";
+      const withheld = a.applicant && a.applicant.withheld ? ' <span class="muted small">(individuals not shown)</span>' : "";
+      return `<li>${esc(a.meeting_date)} · item ${esc(a.item_label || "label not readable")} — <b>${esc(OUTCOME_TEXT[a.outcome] || a.outcome)}${defer}</b>, ${tally}
+        <span class="muted small">(“${esc(a.motion_raw || "")}”)</span>${names ? `<br>${names}` : ""}${withheld}
+        ${a.ambiguous ? `<br><span class="warn small">Possible match only: ${esc(a.reason || "")}</span>` : ""}
+        <br><a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">Clerk's summary, page ${esc(a.page)}</a></li>`;
+    }).join("");
+    const head = council
+      ? `<p><span class="status-pill">${esc(COUNCIL_STAGE_TEXT[council.stage] || council.stage)}</span> ${esc(council.council_date)}${council.deferred_to ? ` · to ${esc(council.deferred_to)}` : ""}</p>`
+      : '<p class="muted">No Council action found yet in the Clerk\'s summaries.</p>';
+    return `
+      <section class="card">
+        <h3>City Council action (Clerk's record)</h3>
+        ${head}
+        ${rows ? `<ul>${rows}</ul>` : ""}
+        <p class="muted small">${esc(notice || "")}</p>
+      </section>`;
+  }
+
   function buildPcItemHtml(it) {
     const r = it.recommendation || {};
     const vote = r.aye == null ? "" : ` · vote ${esc(r.aye)}–${esc(r.nay)} (abstain ${esc(r.abstain)}, absent ${esc(r.absent)})`;
@@ -136,7 +174,7 @@
     return `
       <section class="card">
         <div class="card-head"><h2>${esc(it.addresses || it.request || it.item_key)}</h2>
-          <span class="status-pill">${esc(PC_STATUS_TEXT[it.status] || it.status)}</span></div>
+          <span class="status-pill">${esc(it.council ? COUNCIL_STAGE_TEXT[it.council.stage] || it.council.stage : PC_STATUS_TEXT[it.status] || it.status)}</span></div>
         <p class="muted">${esc(PC_STATUS_TEXT[it.status] || it.status)}${vote}${src}</p>
         <h3>Planning Commission hearing</h3>
         <dl class="facts">
@@ -157,15 +195,16 @@
         <h3>Parcels</h3>
         ${parcels ? `<table class="grid"><thead><tr><th>Agenda GPIN</th><th>Parcel</th><th>Zoning · use</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No GPIN on the agenda.</p>'}
       </section>
+      ${buildCouncilHtml(it.council, it.council_actions, it.council_notice)}
       <section class="card">
-        <h3>Possible City Council decisions</h3>
+        <h3>Possible City Council decisions (vote data)</h3>
         ${cands ? `<ul>${cands}</ul>` : '<p class="muted">None found yet in the Council data.</p>'}
         <p class="muted small">Matched by parcel or street address within 12 months after the hearing: candidates, not confirmed.</p>
       </section>
       <p class="muted small">${esc(it.notice || "")}</p>`;
   }
 
-  const FILING_STAGE_TEXT = Object.assign({ filed: "Filed — outcome not yet known" }, PC_STATUS_TEXT);
+  const FILING_STAGE_TEXT = Object.assign({ filed: "Filed — outcome not yet known" }, PC_STATUS_TEXT, COUNCIL_STAGE_TEXT);
 
   function party(p, what) {
     if (!p || (!p.name && !p.withheld)) return '<span class="muted">not recorded</span>';
@@ -184,7 +223,7 @@
       <section class="card">
         <div class="card-head"><h2>${esc(f.plan_type_label)} · ${esc(f.pln_id)}</h2>
           <span class="status-pill">${esc(FILING_STAGE_TEXT[f.stage] || f.stage)}</span></div>
-        <p class="muted">Application filed ${esc(f.date_sub)}${f.hearing_date ? ` · Planning Commission hearing ${esc(f.hearing_date)}` : ""}</p>
+        <p class="muted">Application filed ${esc(f.date_sub)}${f.hearing_date ? ` · Planning Commission hearing ${esc(f.hearing_date)}` : ""}${f.council_date ? ` · City Council ${esc(f.council_date)}` : ""}</p>
         <h3>Application</h3>
         <dl class="facts">
           <div><dt>Filed</dt><dd>${esc(f.date_sub)}</dd></div>
@@ -202,6 +241,9 @@
       <section class="card">
         <h3>Planning Commission</h3>
         ${hearings ? `<ul>${hearings}</ul>` : '<p class="muted">No hearing found yet for this record.</p>'}
+      </section>
+      ${f.pc_item_key ? buildCouncilHtml(f.council_date ? { stage: f.stage, council_date: f.council_date } : null, f.council_actions, "") : ""}
+      <section class="card">
         <h3>Permits on these parcels since filing</h3>
         ${permits ? `<ul>${permits}</ul>` : '<p class="muted">None in the permit data.</p>'}
         <p class="muted small">Same-parcel permits are candidates: a permit on the site may belong to a different project.</p>
@@ -209,7 +251,8 @@
       <p class="muted small">${esc(f.notice || "")}</p>`;
   }
 
-  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml };
+  const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml,
+    buildCouncilHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

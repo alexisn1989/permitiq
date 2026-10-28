@@ -164,6 +164,9 @@ def main(argv=None) -> int:
     p.add_argument("--pc", action="store_true",
                    help="also index, ingest and link Planning Commission agendas and minutes (earliest leads)")
     p.add_argument("--pc-urls", type=Path, help="hand-made list of PC PDF URLs, merged into the index")
+    p.add_argument("--clerk", action="store_true",
+                   help="also read the City Clerk's Summary of Council Actions -- the official Council outcomes")
+    p.add_argument("--clerk-years", default=None, help="years for --clerk, e.g. 2021-2026 (default 2021-this year)")
     p.add_argument("--filings", action="store_true",
                    help="also load applications as filed (the city's filing layer) -- the earliest leads")
     args = p.parse_args(argv)
@@ -242,6 +245,12 @@ def main(argv=None) -> int:
                 r.step("pc_link", "link_pc_council.py", [])
             else:
                 r.skip("pc_hearings", "Planning Commission hearings not requested (--pc)")
+            if args.clerk:  # after the PC items: Council outcomes are linked to them
+                r.step("clerk_summaries", "ingest_clerk_summaries.py",
+                       ["--reports-dir", run_dir, *(["--years", args.clerk_years] if args.clerk_years else [])],
+                       gap_codes={3})
+            else:
+                r.skip("clerk_summaries", "Clerk's Summary of Council Actions not requested (--clerk)")
 
             imported = 0
             rd = args.reviews_dir
@@ -275,6 +284,8 @@ def main(argv=None) -> int:
             r.step("pc_report", "pc_report.py", ["--out", run_dir, *stage_flag])
         if args.filings:
             r.step("filing_report", "filing_report.py", ["--out", run_dir])
+        if args.clerk:
+            r.step("clerk_report", "clerk_report.py", ["--out", run_dir])
         if args.phase == "report":
             r.skip("accuracy_sample", "report phase: the existing sample and its recorded population are kept")
         elif stage == "provisional":

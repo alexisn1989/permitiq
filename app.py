@@ -39,7 +39,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, pc_hearings, quality
+from ingest import council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
+    pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -755,8 +756,35 @@ def land_use_decision_detail(decision_key: str):
 
 
 PC_ITEM_SQL = """SELECT i.*, s.status, s.status_source, s.minutes_recommendation, s.recommendation_raw, s.aye, s.nay,
-                         s.abstain, s.absent, s.n_council_candidates
-                  FROM pc_items i JOIN pc_item_status s ON s.item_key = i.item_key"""
+                         s.abstain, s.absent, s.n_council_candidates, o.stage AS council_stage, o.council_date,
+                         o.clerk_item_key, o.deferred_to AS council_deferred_to, o.n_actions AS n_council_actions
+                  FROM pc_items i JOIN pc_item_status s ON s.item_key = i.item_key
+                  LEFT JOIN pc_council_outcomes o ON o.pc_item_key = i.item_key"""
+COUNCIL_NOTICE = ("Council outcomes are read from the City Clerk's Summary of Council Actions (scanned pages, OCR "
+                  "text) and matched by street address and date; each links to the Clerk's page. Per-member votes "
+                  "are not read. Names of private individuals are not shown.")
+
+
+def _council(r: dict) -> dict | None:
+    """The Council stage of a PC item, from the Clerk's record, or None."""
+    if not r.get("council_stage"):
+        return None
+    return {"stage": r["council_stage"], "council_date": r["council_date"], "clerk_item_key": r["clerk_item_key"],
+            "deferred_to": r["council_deferred_to"], "n_actions": r["n_council_actions"]}
+
+
+def _council_actions(conn, pc_item_key: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT c.*, l.matched_on, l.days_after_hearing, l.ambiguous, l.reason FROM clerk_pc_links l "
+        "JOIN clerk_items c ON c.item_key = l.clerk_item_key WHERE l.pc_item_key = ? "
+        "ORDER BY c.meeting_date, c.item_key", (pc_item_key,)).fetchall()
+    out = []
+    for r in rows:
+        a = council_actions.public_item(dict(r))
+        a.update({"matched_on": r["matched_on"], "days_after_hearing": r["days_after_hearing"],
+                  "ambiguous": bool(r["ambiguous"]), "reason": r["reason"]})
+        out.append(a)
+    return out
 PC_NOTICE = ("A Planning Commission recommendation is advice to City Council, not an approval. Applicant, request "
              "and size are read from the agenda text and not verified; names of private individuals are not shown.")
 
@@ -793,6 +821,7 @@ def pc_items_route(
         for r in rows:
             item = pc_hearings.public_item(r)
             item.update({k: r[k] for k in ("status", "status_source", "n_council_candidates")})
+            item["council"] = _council(r)
             parcels = [p for p in pc_hearings.item_parcels(conn, item["gpins"][:1]) if p.get("gpin")]
             first = parcels[0] if parcels and not parcels[0]["ambiguous"] else None
             item["lat"], item["lng"] = (first["lat"], first["lng"]) if first else (None, None)
@@ -819,8 +848,10 @@ def pc_item_detail(item_key: str):
             "ON d.decision_key = c.decision_key JOIN land_use_decision_status s ON s.decision_key = c.decision_key "
             "WHERE c.item_key = ? ORDER BY d.meeting_date", (item_key,))]
         parcels = pc_hearings.item_parcels(conn, item["gpins"])
+        actions = _council_actions(conn, item_key)
         as_of = quality.data_as_of(conn)
     item.update({
+        "council": _council(row), "council_actions": actions, "council_notice": COUNCIL_NOTICE,
         "status": row["status"], "status_source": row["status_source"],
         "recommendation": {"raw": row["recommendation_raw"], "normalized": row["minutes_recommendation"],
                            "aye": row["aye"], "nay": row["nay"], "abstain": row["abstain"], "absent": row["absent"],
@@ -831,18 +862,20 @@ def pc_item_detail(item_key: str):
     return item
 
 
-FILING_SQL = """SELECT f.*, s.pc_item_key, s.pc_status, s.hearing_date, s.n_council_candidates, s.permits_after_filing
+FILING_SQL = """SELECT f.*, s.pc_item_key, s.pc_status, s.hearing_date, s.n_council_candidates, s.permits_after_filing,
+                        s.stage, s.council_date, s.clerk_item_key
                  FROM filings f JOIN filing_loads l ON l.load_id = f.load_id AND l.is_active = 1
                  JOIN filing_status s ON s.pln_id = f.pln_id"""
-FILING_STAGES = ("filed",) + db_module.PC_STATUSES
+FILING_STAGES = ("filed",) + db_module.PC_STATUSES + db_module.COUNCIL_STAGES
 FILING_NOTICE = ("A filed application is not an approval; the city's filing layer has no status. Later stages come "
-                 "from Planning Commission records with the same Accela number. Names of private individuals are "
-                 "not shown.")
+                 "from Planning Commission records with the same Accela number, then the City Clerk's record of the "
+                 "Council action on that item. Names of private individuals are not shown.")
 
 
 def _filing_out(conn, r: dict) -> dict:
     out = filings_mod.public_filing(r)
-    out.update({"stage": r["pc_status"] or "filed", "pc_item_key": r["pc_item_key"], "hearing_date": r["hearing_date"],
+    out.update({"stage": r["stage"], "pc_status": r["pc_status"], "council_date": r["council_date"],
+                "pc_item_key": r["pc_item_key"], "hearing_date": r["hearing_date"],
                 "n_council_candidates": r["n_council_candidates"], "permits_after_filing": r["permits_after_filing"]})
     return out
 
@@ -859,7 +892,7 @@ def filings_route(
     types = parse_tokens(pln_type, None, "pln_type")
     where, args = [], []
     if stages:
-        where.append(f"COALESCE(s.pc_status, 'filed') IN ({','.join('?' * len(stages))})")
+        where.append(f"s.stage IN ({','.join('?' * len(stages))})")
         args += stages
     if types:
         where.append(f"f.pln_type IN ({','.join('?' * len(types))})")
@@ -891,6 +924,7 @@ def filing_detail(pln_id: str):
         out["pc_items"] = [dict(x) for x in conn.execute(
             "SELECT i.item_key, i.meeting_date, i.request, s.status FROM pc_items i, json_each(i.accela_json) a "
             "JOIN pc_item_status s ON s.item_key = i.item_key WHERE a.value = ? ORDER BY i.meeting_date", (pln_id,))]
+        out["council_actions"] = _council_actions(conn, r["pc_item_key"]) if r["pc_item_key"] else []
         out["permits_on_site"] = [dict(x) for x in conn.execute(
             "SELECT DISTINCT p.id AS permit_id, p.source_permit_id, p.address, p.permit_type, p.applied_date, "
             "p.status FROM json_each(?) g JOIN permit_parcel_effective pp ON pp.display_gpin = g.value "
@@ -899,6 +933,61 @@ def filing_detail(pln_id: str):
         out["geometry"] = json.loads(r["geom_geojson"])
         out["data_as_of"] = quality.data_as_of(conn)
     out["notice"] = FILING_NOTICE
+    return out
+
+
+CLERK_ITEM_SQL = """SELECT c.*, (SELECT COUNT(*) FROM clerk_pc_links l WHERE l.clerk_item_key = c.item_key
+                        AND l.ambiguous = 0) AS n_pc_items FROM clerk_items c"""
+
+
+@app.get("/api/land-use/council-actions")
+def council_actions_route(
+    outcome: Optional[list[str]] = Query(None), district: Optional[int] = Query(None, ge=1, le=99),
+    date_from: Optional[str] = None, date_to: Optional[str] = None, limit: int = Query(500, ge=1, le=5000),
+):
+    """Land-use items from the City Clerk's Summary of Council Actions (the official record)."""
+    _validate_date(date_from, "date_from")
+    _validate_date(date_to, "date_to")
+    outcomes = parse_tokens(outcome, db_module.CLERK_OUTCOMES, "outcome")
+    where, args = ["c.is_land_use = 1"], []
+    if outcomes:
+        where.append(f"c.outcome IN ({','.join('?' * len(outcomes))})")
+        args += outcomes
+    if district is not None:
+        where.append("c.council_district = ?")
+        args.append(district)
+    if date_from:
+        where.append("c.meeting_date >= ?")
+        args.append(date_from)
+    if date_to:
+        where.append("c.meeting_date <= ?")
+        args.append(date_to)
+    sql = CLERK_ITEM_SQL + " WHERE " + " AND ".join(where) + " ORDER BY c.meeting_date DESC, c.item_key LIMIT ?"
+    with _ro() as conn:
+        items = []
+        for r in conn.execute(sql, (*args, limit)):
+            a = council_actions.public_item(dict(r))
+            a["n_pc_items"] = r["n_pc_items"]
+            items.append(a)
+        cov = council_actions.coverage(conn)
+    return {"items": items, "count": len(items), "coverage": cov, "notice": COUNCIL_NOTICE}
+
+
+@app.get("/api/land-use/council-actions/{item_key}")
+def council_action_detail(item_key: str):
+    with _ro() as conn:
+        r = conn.execute(CLERK_ITEM_SQL + " WHERE c.item_key = ? AND c.is_land_use = 1", (item_key,)).fetchone()
+        if r is None:
+            raise HTTPException(404, "council action not found")
+        out = council_actions.public_item(dict(r))
+        out["pc_items"] = [dict(x) for x in conn.execute(
+            "SELECT l.pc_item_key, i.meeting_date, i.request, l.matched_on, l.days_after_hearing, l.ambiguous, l.reason "
+            "FROM clerk_pc_links l JOIN pc_items i ON i.item_key = l.pc_item_key WHERE l.clerk_item_key = ? "
+            "ORDER BY i.meeting_date", (item_key,))]
+        out["addresses"] = [dict(x) for x in conn.execute(
+            "SELECT raw_text, house_from, house_to, street_norm FROM clerk_item_addresses WHERE item_key = ? "
+            "ORDER BY seq", (item_key,))]
+    out["notice"] = COUNCIL_NOTICE
     return out
 
 

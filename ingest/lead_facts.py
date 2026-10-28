@@ -32,7 +32,9 @@ ORG_RE = re.compile(
     r"VENTURES?|INVESTMENTS?|REALTY|ENTERPRISES?|HOMES|BUILDERS|CHURCH|MINISTRIES|BANK|UNIVERSITY|"
     r"SCHOOLS?|FOUNDATION|AUTHORITY|HOSPITAL|CITY\s+OF|COUNTY|COMMONWEALTH|DIOCESE|PARISH|TEMPLE|MOSQUE|"
     r"SYNAGOGUE|ACADEMY|CREDIT\s+UNION|DEPARTMENT|STATE\s+OF|UNITED\s+STATES)\b\.?", re.IGNORECASE)
-_PART_SPLIT = re.compile(r"\s+(?:and|&)\s+|\s*[;,]\s*(?:(?:and|&)\s+)?", re.IGNORECASE)
+# "/" joins parties too ("APPLICANT / OWNER" on Clerk summaries and filings), and OCR text drops the
+# spaces around "&" ("COVE,LLC&SHARON ..."): each part is checked, so "X&ASSOCIATES" is withheld (safe side)
+_PART_SPLIT = re.compile(r"\s+and\s+|\s*&\s*|\s*[;,/]\s*(?:(?:and|&)\s*)?", re.IGNORECASE)
 # ", LLC" / ", L.L.C." / ", Inc." after a comma is part of the name before it, not a separate party
 _SUFFIX_ONLY = re.compile(r"^(?:L\.?L\.?C|L\.?L\.?P|L\.?P|INC|INCORPORATED|CORP|CORPORATION|CO|LTD|PLLC|PC|LC)\.?$",
                           re.IGNORECASE)
@@ -51,7 +53,7 @@ APPROVED = ("approved", "approved_with_conditions")
 
 
 def is_organization(name: str | None) -> bool:
-    """True only when every listed party ("A and B", "A & B", "A; B") is clearly an
+    """True only when every listed party ("A and B", "A & B", "A; B", "A / B") is clearly an
     organization. Any part that may be a private person makes the whole name private."""
     parts: list[str] = []
     for p in (x.strip() for x in _PART_SPLIT.split(name or "")):

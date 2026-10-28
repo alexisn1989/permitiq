@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **470 tests**, all passing, zero live network calls |
+| **Test suite** | **497 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -422,6 +422,36 @@ python scripts/run_vb_pipeline.py --phase full --filings ...
 - **Names:** applicant and project names are shown only for organizations.
 - **Where to see it:** the map layer "Applications filed", the lead screen (`/static/lead.html?filing=<accela id>`, with the boundary drawn), and `GET /api/land-use/filings[/{pln_id}]`.
 
+### City Council outcomes (the Clerk's official record, Virginia Beach)
+
+The City Clerk publishes a **Summary of Council Actions** for every meeting in its Laserfiche archive (`edocs.vbgov.com`, folder SUMMARY ACTIONS). The summaries are scanned tables with an OCR text layer, which the archive's own JSON service returns page by page (`ingest/edocs.py`).
+
+```bash
+python scripts/ingest_clerk_summaries.py --years 2021-2026 --reports-dir reports   # after the PC items are stored
+python scripts/clerk_report.py --out reports    # council_actions.csv: every land-use item, newest first
+python scripts/run_vb_pipeline.py --phase full --pc --clerk ...
+```
+
+- **Measured on the real archive (2021 – Oct 2026):**
+  - 150 summaries, every one listed for those years read;
+  - 739 land-use items: 635 approved (594 with conditions or proffers), 27 denied, 65 deferred, 10 withdrawn, 2 not recognized;
+  - 73 of 97 Planning Commission items reached a Council stage; 8 of 8 sampled links matched the source.
+- **What is read per item:** label, request type, street addresses, district, the motion as printed and its outcome, and the tally (`11-0`). Per-member votes are not read: in the OCR text they are often garbled.
+- **OCR is handled, never guessed:**
+  - known misreads are mapped: `II-u` = 11-0, `J.S.` = J.5., `fora` = for a, `22'd Street` = 22nd Street;
+  - motion words that land inside an address are removed before addresses are read;
+  - an item whose tally, address, label or deferral date cannot be read keeps that field empty and goes to `clerk_parse_review.csv` (with the Clerk's page link).
+- **Coverage:** each year's archive listing is the expected set. A year is `ok` only when every listed summary was stored; otherwise `incomplete`, and the step exits 3 (a gap, never success).
+- **Link to the Planning Commission item:**
+  - same street address;
+  - Council date within 12 months after the hearing;
+  - the most recent hearing at that address.
+  
+  A link is only "possible" when the request types disagree, when unit numbers differ (two short-term rentals in one building), or when several items at that hearing share the address. A possible link never sets a stage.
+- **Council stage:** the latest Council action decides the stage: `council_approved`, `council_approved_with_conditions`, `council_denied`, `council_withdrawn` or `council_deferred`. If actions on that date disagree, the stage is `council_conflicting`. Filings take the stage of their PC item. The PC recommendation itself is unchanged and still never reads "approved".
+- **Names:** "APPLICANT / OWNER" parts are checked one by one (and unspaced `&` splits parties). Only organizations are shown. Subject text and raw blocks are stored for review and never served.
+- **Where to see it:** the "City Council action (Clerk's record)" card on the hearing and filing lead screens, the map popups, and `GET /api/land-use/council-actions[/{key}]`.
+
 ---
 
 ## API
@@ -451,7 +481,9 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/land-use/pc-items` | Planning Commission agenda items with status; filters `status`, `district`, `date_from/to`, `include_city`; coverage summary |
 | `GET /api/land-use/pc-items/{key}` | One item: request, parcels and flood class by GPIN, recommendation and vote, source PDFs, possible Council decisions |
 | `GET /api/land-use/filings` | Applications as filed, with stage; filters `stage`, `pln_type`, `filed_from/to`; active load summary |
-| `GET /api/land-use/filings/{pln_id}` | One application: boundary, parcels, Planning Commission items, same-parcel permits since filing |
+| `GET /api/land-use/filings/{pln_id}` | One application: boundary, parcels, Planning Commission items, Council actions, same-parcel permits since filing |
+| `GET /api/land-use/council-actions` | Land-use items from the Clerk's Summary of Council Actions; filters `outcome`, `district`, `date_from/to`; archive coverage |
+| `GET /api/land-use/council-actions/{key}` | One Council action: outcome, tally, addresses, the PC items it decides (or possibly decides), the Clerk's page |
 | `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (comma list or repeated; each value validated), `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
@@ -464,7 +496,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**470 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**497 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

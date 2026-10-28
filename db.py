@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1359,6 +1359,147 @@ _SCHEMA_V10_STATEMENTS = [
 ]
 
 
+# Schema v11 (City Clerk's Summary of Council Actions, Virginia Beach). The
+# official record of what Council did with each item, read from the Clerk's
+# archive (OCR text of scanned summaries, ingest/clerk_summary.py). Each
+# summary is one clerk_documents row; clerk_items one row per agenda item
+# (the subject, applicant text and raw block are kept for review and never
+# served). Links to Planning Commission items need the same street address,
+# a Council date within 12 months after the hearing, and no disagreement on
+# request type; anything else is stored as ambiguous and changes no stage.
+# pc_council_outcomes is fully derived (scripts/link_clerk.py rebuilds it).
+CLERK_OUTCOMES = ("approved", "approved_with_conditions", "denied", "deferred", "deferred_indefinitely", "withdrawn",
+                  "unmapped")
+COUNCIL_STAGES = ("council_approved", "council_approved_with_conditions", "council_denied", "council_withdrawn",
+                  "council_deferred", "council_conflicting")
+_SCHEMA_V11_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS clerk_documents (
+        entry_id        INTEGER PRIMARY KEY,
+        folder_id       INTEGER NOT NULL,
+        year            INTEGER NOT NULL,
+        name            TEXT NOT NULL,
+        meeting_date    TEXT,
+        page_count      INTEGER NOT NULL,
+        pages_with_text INTEGER NOT NULL,
+        text_sha256     TEXT NOT NULL,
+        source_modified TEXT,
+        fetched_at      TEXT NOT NULL,
+        parser_version  TEXT NOT NULL,
+        parse_status    TEXT NOT NULL CHECK (parse_status IN ('ok', 'partial', 'failed')),
+        n_items         INTEGER NOT NULL DEFAULT 0,
+        n_land_use      INTEGER NOT NULL DEFAULT 0,
+        warnings_json   TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_clerk_documents_date ON clerk_documents(meeting_date)",
+    f"""
+    CREATE TABLE IF NOT EXISTS clerk_items (
+        item_key           TEXT PRIMARY KEY,
+        entry_id           INTEGER NOT NULL REFERENCES clerk_documents(entry_id) ON DELETE CASCADE,
+        meeting_date       TEXT NOT NULL,
+        page               INTEGER NOT NULL,
+        item_label         TEXT,
+        label_certain      INTEGER NOT NULL DEFAULT 1,
+        is_land_use        INTEGER NOT NULL DEFAULT 0,
+        request_types_json TEXT NOT NULL DEFAULT '[]',
+        applicant_text     TEXT,
+        council_district   INTEGER,
+        motion_raw         TEXT,
+        outcome            TEXT NOT NULL CHECK (outcome IN ({",".join(repr(o) for o in CLERK_OUTCOMES)})),
+        deferred_to        TEXT,
+        aye                INTEGER,
+        nay                INTEGER,
+        tally_raw          TEXT,
+        subject            TEXT NOT NULL,
+        raw_block          TEXT NOT NULL,
+        warnings_json      TEXT NOT NULL DEFAULT '[]',
+        updated_at         TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_clerk_items_date ON clerk_items(meeting_date)",
+    """
+    CREATE TABLE IF NOT EXISTS clerk_item_addresses (
+        item_key    TEXT NOT NULL REFERENCES clerk_items(item_key) ON DELETE CASCADE,
+        seq         INTEGER NOT NULL,
+        raw_text    TEXT NOT NULL,
+        house_from  INTEGER,
+        house_to    INTEGER,
+        street_norm TEXT NOT NULL,
+        PRIMARY KEY (item_key, seq)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_clerk_item_addresses_street ON clerk_item_addresses(street_norm)",
+    """
+    CREATE TABLE IF NOT EXISTS clerk_pc_links (
+        clerk_item_key     TEXT NOT NULL REFERENCES clerk_items(item_key) ON DELETE CASCADE,
+        pc_item_key        TEXT NOT NULL REFERENCES pc_items(item_key) ON DELETE CASCADE,
+        matched_on         TEXT NOT NULL CHECK (matched_on IN ('address', 'address_type')),
+        days_after_hearing INTEGER NOT NULL,
+        ambiguous          INTEGER NOT NULL DEFAULT 0 CHECK (ambiguous IN (0, 1)),
+        reason             TEXT,
+        linked_at          TEXT NOT NULL,
+        PRIMARY KEY (clerk_item_key, pc_item_key)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_clerk_pc_links_pc ON clerk_pc_links(pc_item_key)",
+    f"""
+    CREATE TABLE IF NOT EXISTS pc_council_outcomes (
+        pc_item_key    TEXT PRIMARY KEY REFERENCES pc_items(item_key) ON DELETE CASCADE,
+        clerk_item_key TEXT NOT NULL REFERENCES clerk_items(item_key) ON DELETE CASCADE,
+        council_date   TEXT NOT NULL,
+        stage          TEXT NOT NULL CHECK (stage IN ({",".join(repr(s) for s in COUNCIL_STAGES)})),
+        deferred_to    TEXT,
+        n_actions      INTEGER NOT NULL,
+        computed_at    TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS clerk_decision_links (
+        clerk_item_key TEXT NOT NULL REFERENCES clerk_items(item_key) ON DELETE CASCADE,
+        decision_key   TEXT NOT NULL REFERENCES land_use_decisions(decision_key) ON DELETE CASCADE,
+        linked_at      TEXT NOT NULL,
+        PRIMARY KEY (clerk_item_key, decision_key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS clerk_index_checks (
+        check_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        year        INTEGER NOT NULL,
+        folder_id   INTEGER,
+        listed      INTEGER NOT NULL DEFAULT 0,
+        stored      INTEGER NOT NULL DEFAULT 0,
+        status      TEXT NOT NULL CHECK (status IN ('ok', 'incomplete', 'error')),
+        detail      TEXT,
+        checked_at  TEXT NOT NULL
+    )
+    """,
+    # filing_status gains the Council stage (from the Clerk's record, via the PC item)
+    "DROP VIEW IF EXISTS filing_status",
+    """
+    CREATE VIEW filing_status AS
+    SELECT x.*, COALESCE(o.stage, x.pc_status, 'filed') AS stage, o.council_date, o.clerk_item_key
+    FROM (
+      SELECT f.pln_id, f.date_sub, f.pln_type,
+             (SELECT i.item_key FROM pc_items i, json_each(i.accela_json) a WHERE a.value = f.pln_id
+              ORDER BY i.meeting_date DESC LIMIT 1) AS pc_item_key,
+             (SELECT s.status FROM pc_items i, json_each(i.accela_json) a
+                  JOIN pc_item_status s ON s.item_key = i.item_key
+              WHERE a.value = f.pln_id ORDER BY i.meeting_date DESC LIMIT 1) AS pc_status,
+             (SELECT i.meeting_date FROM pc_items i, json_each(i.accela_json) a WHERE a.value = f.pln_id
+              ORDER BY i.meeting_date DESC LIMIT 1) AS hearing_date,
+             (SELECT COALESCE(SUM(s.n_council_candidates), 0) FROM pc_items i, json_each(i.accela_json) a
+                  JOIN pc_item_status s ON s.item_key = i.item_key WHERE a.value = f.pln_id) AS n_council_candidates,
+             (SELECT COUNT(DISTINCT p.id) FROM json_each(f.gpins_json) g
+                  JOIN permit_parcel_effective pp ON pp.display_gpin = g.value
+                  JOIN permits p ON p.id = pp.permit_id
+              WHERE p.applied_date >= f.date_sub) AS permits_after_filing
+      FROM filings f JOIN filing_loads l ON l.load_id = f.load_id AND l.is_active = 1
+    ) x LEFT JOIN pc_council_outcomes o ON o.pc_item_key = x.pc_item_key
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1412,6 +1553,9 @@ def init_db(db_path: Path | str | None = None) -> None:
                 conn.execute(statement)
         if current_version < 10:
             for statement in _SCHEMA_V10_STATEMENTS:
+                conn.execute(statement)
+        if current_version < 11:
+            for statement in _SCHEMA_V11_STATEMENTS:
                 conn.execute(statement)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "

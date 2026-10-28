@@ -807,6 +807,7 @@ async function loadPc() {
       L.circleMarker([d.lat, d.lng], { pane: "pc", radius: 7, color: "#0b1220", weight: 1.5, fillColor: st.color, fillOpacity: 0.9 })
         .bindPopup(`<div class="popup"><b>${esc(d.request || "Planning Commission item")}</b>
           <div>${esc(st.label)} · hearing ${esc(d.meeting_date)}</div>
+          ${d.council ? `<div>${esc((FILING_STAGE[d.council.stage] || { label: d.council.stage }).label)} · ${esc(d.council.council_date)}</div>` : ""}
           <div>${who}</div><div class="muted">${esc(d.addresses || "")}</div>
           <a href="/static/lead.html?pc=${encodeURIComponent(d.item_key)}">Open hearing details</a></div>`)
         .addTo(pcLayer);
@@ -829,7 +830,8 @@ $("pc-layer-toggle").addEventListener("change", (e) => {
 
 // ---------- applications filed (earliest signal) ----------
 // The city's filing layer has no status: a filing is "filed — outcome not yet known"
-// until a Planning Commission record with the same Accela number says more.
+// until a Planning Commission record with the same Accela number says more, and the
+// Clerk's Summary of Council Actions gives the Council outcome.
 const FILING_STAGE = {
   filed: { label: "Filed — outcome not yet known", color: "#22d3ee" },
   scheduled: { label: "Scheduled for hearing", color: "#3b82f6" },
@@ -837,6 +839,12 @@ const FILING_STAGE = {
   recommended_denial: { label: "PC recommended denial", color: "#f87171" },
   deferred: { label: "Deferred", color: "#fbbf24" },
   withdrawn: { label: "Withdrawn", color: "#6b7280" },
+  council_approved: { label: "Council approved", color: "#22c55e" },
+  council_approved_with_conditions: { label: "Council approved (conditions)", color: "#16a34a" },
+  council_denied: { label: "Council denied", color: "#dc2626" },
+  council_deferred: { label: "Council deferred", color: "#f59e0b" },
+  council_withdrawn: { label: "Withdrawn at Council", color: "#4b5563" },
+  council_conflicting: { label: "Council actions differ", color: "#e879f9" },
 };
 const filingLayer = L.layerGroup();
 map.createPane("filing").style.zIndex = 630;
