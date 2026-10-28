@@ -338,3 +338,24 @@ def test_usda_soils_complete_load_and_derived_shares(measured, monkeypatch):
         assert "USDA survey version 9/11/2026" in conn.execute(
             "SELECT where_clause FROM constraint_loads WHERE layer_key = 'usda_soils'").fetchone()[0]
         assert C.csv_summary(conn, ["14892864850000"])["hydric_share"] == 0.25
+
+
+def test_nrhp_circumscribed_boxes_are_not_boundaries(measured, monkeypatch):
+    house = _poly(1, _box(-76.005, 36.803, -76.0, 36.807), RESNAME="Example House", NRIS_Refnum="1",
+                  ResType="building", BND_TYPE="Circumscribed polygon")
+    district = _poly(2, _box(-76.0112, 36.803, -76.008, 36.807), RESNAME="Example District", NRIS_Refnum="2",
+                     ResType="district", BND_TYPE="Circumscribed polygon")
+    real = _poly(3, _box(-76.0420, 36.8030, -76.0380, 36.8070), RESNAME="Example Farm", NRIS_Refnum="3",
+                 ResType="building", BND_TYPE="Perimeter polygon")
+    monkeypatch.setitem(GEOMETRY, "nrhp_polygons", "esriGeometryPolygon")
+    monkeypatch.setattr(lc_s, "fetch_json", _layers({"nrhp_polygons": [house, district, real]}))
+    assert lc_s.main(["--layer", "nrhp_polygons"]) == 0
+    assert tag_s.main(["--all"]) == 0
+    r = _rows(measured)
+    assert ("14892864850000", "nrhp_polygons") not in r  # a box around one building: not used as a boundary
+    approx = C.describe("nrhp_polygons", r[("24000000000000", "nrhp_polygons")])
+    assert "approximate (circumscribed) mapping area of Example District" in approx
+    assert C.describe("nrhp_polygons", r[("24300000000000", "nrhp_polygons")]).endswith(": Example Farm")
+    with db_module.db_readonly(measured["db"]) as conn:
+        assert C.csv_summary(conn, ["24000000000000"])["nrhp"] == "inside an approximate listed-district area"
+        assert C.csv_summary(conn, ["24300000000000"])["nrhp"] == "inside a listed property"

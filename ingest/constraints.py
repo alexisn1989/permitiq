@@ -171,6 +171,14 @@ def keep_attrs(layer: Layer, props: dict) -> dict:
     return out
 
 
+def _attr(props: dict | None, name: str):
+    return next((v for k, v in (props or {}).items() if k.upper() == name.upper()), None)
+
+
+def _circumscribed(props: dict | None) -> bool:
+    return str(_attr(props, "BND_TYPE") or "").lower().startswith("circumscribed")
+
+
 def normalize(layer: Layer, features: list[dict], stats) -> list[dict]:
     """GeoJSON features -> {feature_id, geom (lon/lat), attrs}. Empty or wrong
     geometry is counted, never stored."""
@@ -181,6 +189,10 @@ def normalize(layer: Layer, features: list[dict], stats) -> list[dict]:
             stats["no_geometry"] += 1
             continue
         geom = shape(g)
+        if layer.key == "nrhp_polygons" and _circumscribed(f.get("properties")) and \
+                str(_attr(f.get("properties"), "ResType") or "").lower() != "district":
+            stats["circumscribed_non_district_skipped"] += 1  # a box around one building, not a boundary:
+            continue                                            # its NPS point gives the location instead
         if layer.kind == "polygon_share":
             geom = polygonal(geom)
         elif layer.kind == "point_near":
@@ -240,7 +252,8 @@ class LayerIndex:
                         k = self.rows[i]["attrs"].get(self.layer.group_by) or "unnamed"
                         by.setdefault(k, [0.0, self.rows[i]["attrs"]])[0] += part
                 detail["by"] = [{"name": k, "acres": round(v / SQFT_PER_ACRE, 3), "share": round(v / area, 4),
-                                 **({"attrs": a} if self.layer.source == "sda" else {})}
+                                 **({"attrs": a} if self.layer.source == "sda" or self.layer.key == "nrhp_polygons"
+                                    else {})}
                                 for k, (v, a) in sorted(by.items(), key=lambda kv: -kv[1][0])]
                 if self.layer.source == "sda":
                     detail.update(soil_summary(detail["by"]))
@@ -337,6 +350,9 @@ def describe(layer_key: str, row: dict) -> str:
     text = f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the {layer.label[0].lower() + layer.label[1:]}"
     if layer.key == "nrhp_polygons":
         b = (detail.get("by") or [{}])[0]
+        if _circumscribed(b.get("attrs")):
+            return (f"{acres:,.2f} ac ({row['share'] * 100:.0f}%) of the parcel inside the approximate (circumscribed) "
+                    f"mapping area of {b.get('name', '')}: the listed district boundary may be smaller")
         text += f": {b.get('name', '')}"
     return text
 
@@ -444,8 +460,13 @@ def csv_summary(conn, gpins: list[str]) -> dict:
     syip = [near[k]["distance_ft"] for k in ("vdot_syip_lines", "vdot_syip_points") if k in near]
     if syip:
         out["syip_within_ft"] = round(min(syip))
-    if "nrhp_polygons" in best:
+    nrhp = [json.loads(r[0]) for r in conn.execute(
+        f"SELECT detail_json FROM parcel_constraints_effective WHERE layer_key = 'nrhp_polygons' AND share > 0 "
+        f"AND gpin IN ({marks})", gpins)]
+    if any(not _circumscribed((d.get("by") or [{}])[0].get("attrs")) for d in nrhp):
         out["nrhp"] = "inside a listed property"
+    elif nrhp:
+        out["nrhp"] = "inside an approximate listed-district area"
     elif "nrhp_points" in near:
         out["nrhp"] = f"listed site {near['nrhp_points']['distance_ft']:.0f} ft"
     for col, key in (("southern_watersheds_buffer_share", "southern_watersheds_buffer"),

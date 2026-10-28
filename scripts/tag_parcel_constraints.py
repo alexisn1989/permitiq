@@ -8,7 +8,7 @@ inside and distance to line layers (ingest/constraints.py). Rows are keyed by
 until this runs again. Only parcels that touch a layer get a row for it.
 
 Usage:
-  python scripts/tag_parcel_constraints.py [--all] [--dry-run]
+  python scripts/tag_parcel_constraints.py [--all] [--layer KEY ...] [--dry-run]
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ class _DryRun(Exception):
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Measure parcels against site-constraint layers")
     p.add_argument("--all", action="store_true", help="every parcel of the active load, not just lead parcels")
+    p.add_argument("--layer", action="append", choices=sorted(C.LAYERS), help="only these layers (default: all)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     ts = db_module.now_iso()
@@ -58,6 +59,8 @@ def main(argv=None) -> int:
             print(f"parcel load {pl}: {len(parcels)} parcel(s) in scope{' (all)' if args.all else ' (lead parcels)'}")
             touched: Counter = Counter()
             for key, layer in sorted(C.LAYERS.items()):
+                if args.layer and key not in args.layer:
+                    continue
                 got = C.load_layer_index(conn, layer)
                 if got is None:
                     print(f"  {key}: no active load (load_constraints.py) -- not measured")
