@@ -138,6 +138,7 @@ def test_records_never_store_staff_logins_and_stay_out_of_permits(loaded):
     assert n_permits == 0
     pub = CH.public_record(r)
     assert pub["organization"] == {"name": None, "withheld": True} and pub["submitted_date"] == "2026-09-01"
+    assert pub["details"] == {"name": None, "withheld": True}  # "Example site plan" is not clearly an organization
 
 
 def test_identical_reload_writes_nothing(loaded, monkeypatch):
@@ -211,3 +212,69 @@ def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):
         r = conn.execute("SELECT * FROM parcel_constraints_effective WHERE layer_key = 'ches_rpa_buffer'").fetchone()
         assert r["gpin"] == "0001000000010" and r["share"] == 0.5
         assert C.describe("ches_rpa_buffer", dict(r))== "1.22 ac (50%) of the parcel inside: Chesapeake Bay RPA buffer"
+
+
+# ---------- API ----------
+
+def test_case_and_record_routes(loaded):
+    r = client.get("/api/land-use/cases").json()
+    assert {c["case_id"] for c in r["cases"]} == {"PLN-REZ-2025-001", "PLN-USE-2025-002"}  # legacy hidden by default
+    assert r["load"]["source"] == "ches_cases" and "no building permits" in r["notice"]
+    assert len(client.get("/api/land-use/cases?include_legacy=true").json()["cases"]) == 3
+    assert [c["case_id"] for c in client.get("/api/land-use/cases?stage=withdrawn").json()["cases"]] == \
+        ["PLN-USE-2025-002"]
+    assert client.get("/api/land-use/cases?stage=bogus").status_code == 422
+    d = client.get("/api/land-use/cases/PLN-REZ-2025-001").json()
+    assert d["city_council"]["action"] == "Approved" and d["geometry"]["type"] in ("Polygon", "MultiPolygon")
+    assert d["parcels"] == [] and "site_constraints" in d
+    assert client.get("/api/land-use/cases/none").status_code == 404
+    body = client.get("/api/land-use/cases?include_legacy=true").text + client.get("/api/development-records").text
+    assert "Jane Q Public" not in body and "JDOE" not in body
+    assert "5 lot subdivision" not in body and "Pat Planner" not in body  # free-text notes and staff never served
+    recs = client.get("/api/development-records?source=ches_dev_plans").json()
+    assert {x["record_id"] for x in recs["records"]} == {"DEV-SITE-2026-001", "DEV-SITE-2026-002"}
+    assert client.get("/api/development-records?source=ches_cases").status_code == 422
+
+
+import shutil, subprocess  # noqa: E402,E401
+
+node = shutil.which("node")
+
+
+@pytest.mark.skipif(node is None, reason="node not installed")
+def test_case_html_escapes_and_withholds(loaded):
+    c = client.get("/api/land-use/cases/PLN-USE-2025-002").json()
+    c["address"] = "<img src=x>"
+    c["source_link"] = "javascript:alert(1)"
+    js = "const u = require(process.argv[1]); process.stdout.write(u.buildCaseHtml(JSON.parse(process.argv[2])))"
+    out = subprocess.run([node, "-e", js, str(ROOT / "static" / "lead_util.js"), json.dumps(c)],
+                         capture_output=True, text=True, check=True).stdout
+    assert "Withdrawn" in out and "The project name is an individual — name not shown" in out
+    assert "<img" not in out and 'href="javascript' not in out and "Jane Q Public" not in out
+    assert "no building permits" in out
+
+
+def test_report_csvs_withhold_names(loaded, tmp_path):
+    import csv as _csv
+    rep = _script("chesapeake_report")
+    assert rep.main(["--out", str(tmp_path)]) == 0
+    cases = list(_csv.DictReader((tmp_path / "chesapeake_cases.csv").open()))
+    plans = list(_csv.DictReader((tmp_path / "development_plans.csv").open()))
+    assert len(cases) == 3 and len(plans) == 2
+    assert {c["stage"] for c in cases} == {"approved", "withdrawn", "other"}
+    text = (tmp_path / "chesapeake_cases.csv").read_text() + (tmp_path / "development_plans.csv").read_text()
+    assert "Jane Q Public" not in text and "JDOE" not in text
+
+
+def test_city_layers_expected_only_once_that_city_has_parcels(env):
+    from ingest import quality as Q
+    with db_module.db(env["db"]) as conn:
+        conn.execute("INSERT INTO constraint_loads (layer_key, source_url, where_clause, expected_count, received_count, "
+                     "unique_ids, features, content_hash, loaded_at, is_active) "
+                     "VALUES ('cbpa_rpa', 'x', '1=1', 0, 0, 0, 0, 'h', 'now', 1)")
+        missing = Q.constraint_quality(conn)["missing_layers"]
+        assert missing and not [k for k in missing if k.startswith("ches_")]
+        conn.execute("INSERT INTO parcel_loads (source_url, content_hash, feature_count, expected_count, received_count, "
+                     "unique_source_ids, loaded_at, is_active, locality) VALUES ('x', 'h', 0, 0, 0, 0, 'now', 1, "
+                     "'chesapeake')")
+        assert "ches_rpa_buffer" in Q.constraint_quality(conn)["missing_layers"]

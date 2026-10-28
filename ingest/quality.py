@@ -338,9 +338,44 @@ def constraint_quality(conn) -> dict | None:
         "FROM board_action_loads WHERE is_active = 1")}
     if not layers and not boards:
         return None
+    # a city's layers are expected only once that city has parcels loaded
+    cities = {LOCALITY} | {r[0] for r in conn.execute("SELECT locality FROM parcel_loads WHERE is_active = 1")}
+    expected = {k for k, layer in constraints.LAYERS.items() if layer.locality in cities}
     return {"layers": layers, "boards": boards,
-            "missing_layers": sorted(set(constraints.LAYERS) - set(layers)),
+            "missing_layers": sorted(expected - set(layers)),
             "missing_boards": sorted(set(constraints.BOARD_LAYERS) - set(boards))}
+
+
+def pipeline_city_quality(conn) -> dict | None:
+    """Cities without published building permits (Chesapeake): their record loads,
+    case stages and parcel-link rates; None if none is loaded."""
+    loads = [dict(r) for r in conn.execute(
+        "SELECT locality, source, expected_count, received_count, unique_ids, records, loaded_at, parcel_load_id "
+        "FROM city_record_loads WHERE is_active = 1 ORDER BY locality, source")]
+    if not loads:
+        return None
+    out = {}
+    for ld in loads:
+        city = out.setdefault(ld["locality"], {"loads": {}})
+        city["loads"][ld["source"]] = ld
+    for city, block in out.items():
+        one = lambda sql: conn.execute(sql, (city,)).fetchone()[0]  # noqa: E731
+        block["cases_by_stage"] = dict(conn.execute(
+            "SELECT stage, COUNT(*) FROM land_use_cases_effective WHERE locality = ? GROUP BY 1", (city,)).fetchall())
+        block["cases_legacy"] = one("SELECT COUNT(*) FROM land_use_cases_effective WHERE locality = ? AND legacy = 1")
+        block["cases_with_parcels"] = one(
+            "SELECT COUNT(*) FROM land_use_cases_effective WHERE locality = ? AND gpins_json != '[]'")
+        block["records_by_source_status"] = [list(r) for r in conn.execute(
+            "SELECT source, status, COUNT(*) FROM development_records_effective WHERE locality = ? GROUP BY 1, 2 "
+            "ORDER BY 1, 2", (city,))]
+        block["records_with_parcels"] = one(
+            "SELECT COUNT(*) FROM development_records_effective WHERE locality = ? AND gpins_json != '[]'")
+        block["parcels"] = one("SELECT COUNT(*) FROM parcels p JOIN parcel_loads l ON l.load_id = p.load_id "
+                               "AND l.is_active = 1 WHERE l.locality = ?")
+        block["parcels_flood_tagged"] = one(
+            "SELECT COUNT(*) FROM parcel_flood_effective f JOIN parcel_loads l ON l.load_id = f.parcel_load_id "
+            "WHERE l.locality = ?")
+    return out
 
 
 def quality(conn) -> dict:
@@ -348,7 +383,7 @@ def quality(conn) -> dict:
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
             "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn),
             "filings": filing_quality(conn), "council_actions": clerk_quality(conn),
-            "site_constraints": constraint_quality(conn)}
+            "site_constraints": constraint_quality(conn), "pipeline_cities": pipeline_city_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -459,6 +494,12 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
         add("Constraint layers complete", not missing,
             f"{len(sq['layers'])} layers and {len(sq['boards'])} board histories loaded complete"
             + (f"; not loaded: {', '.join(missing)}" if missing else ""))
+    for city, pq in sorted((q.get("pipeline_cities") or {}).items()):
+        lds = pq["loads"].values()
+        add(f"{city} records complete", all(x["expected_count"] == x["received_count"] for x in lds),
+            "; ".join(f"{x['source']} {x['received_count']} of {x['expected_count']} -> {x['records']}" for x in lds)
+            + f"; cases with parcels {pq['cases_with_parcels']}, records with parcels {pq['records_with_parcels']}; "
+              "no building permits published")
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

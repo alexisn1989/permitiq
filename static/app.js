@@ -889,6 +889,84 @@ $("filing-layer-toggle").addEventListener("change", (e) => {
   }
 });
 
+// ---------- Chesapeake pipeline (no building permits published) ----------
+// Stages are the city's own Development Tracking record; development plans are
+// not building permits and are never counted as permits.
+const CASE_STAGE = {
+  approved: { label: "Approved (city record)", color: "#22c55e" },
+  pending: { label: "Pending", color: "#22d3ee" },
+  denied: { label: "Denied", color: "#dc2626" },
+  withdrawn: { label: "Withdrawn", color: "#6b7280" },
+  incomplete: { label: "Incomplete", color: "#fbbf24" },
+  other: { label: "Final action as printed", color: "#e879f9" },
+};
+const chesCaseLayer = L.layerGroup();
+const chesPlanLayer = L.layerGroup();
+map.createPane("ches").style.zIndex = 625;
+const chesMeta = { cases: null, plans: null };
+
+function renderChesControls() {
+  const on = $("ches-cases-toggle").checked || $("ches-plans-toggle").checked;
+  if (!on) { $("ches-legend").innerHTML = ""; return; }
+  const parts = [];
+  if ($("ches-cases-toggle").checked) {
+    parts.push(Object.values(CASE_STAGE).map((v) => `
+      <span class="flood-legend-item"><span class="flood-swatch" style="background:${v.color}"></span>${esc(v.label)}</span>`).join(""));
+    if (chesMeta.cases != null) parts.push(`<span class="flood-legend-item">${esc(chesMeta.cases)} cases (2014 legacy imports hidden)</span>`);
+  }
+  if ($("ches-plans-toggle").checked && chesMeta.plans != null) {
+    parts.push(`<span class="flood-legend-item"><span class="flood-swatch" style="background:#f97316"></span>${esc(chesMeta.plans)} development plans</span>`);
+  }
+  parts.push('<span class="flood-legend-item">Chesapeake publishes no building permits.</span>');
+  $("ches-legend").innerHTML = parts.join("");
+}
+
+async function loadChesCases() {
+  chesCaseLayer.clearLayers();
+  try {
+    const res = await api("/api/land-use/cases?limit=5000");
+    chesMeta.cases = res.count;
+    for (const c of res.cases) {
+      if (c.lat == null) continue;
+      const st = CASE_STAGE[c.final.stage] || { label: c.final.stage, color: "#888" };
+      L.circleMarker([c.lat, c.lng], { pane: "ches", radius: 6, color: "#0b1220", weight: 1.2, fillColor: st.color, fillOpacity: 0.9 })
+        .bindPopup(`<div class="popup"><b>${esc(c.case_type || "Land-use case")}</b> · ${esc(c.case_id)}
+          <div>${esc(st.label)}${c.applied_date ? ` · applied ${esc(c.applied_date)}` : ""}</div>
+          <a href="/static/lead.html?case=${encodeURIComponent(c.case_id)}">Open case details</a></div>`)
+        .addTo(chesCaseLayer);
+    }
+  } catch (err) {
+    toast(`Chesapeake cases unavailable: ${err.message}`, true);
+  }
+  renderChesControls();
+}
+
+async function loadChesPlans() {
+  chesPlanLayer.clearLayers();
+  try {
+    const res = await api("/api/development-records?source=ches_dev_plans&limit=5000");
+    chesMeta.plans = res.count;
+    for (const r of res.records) {
+      if (r.lat == null) continue;
+      L.circleMarker([r.lat, r.lng], { pane: "ches", radius: 5, color: "#0b1220", weight: 1, fillColor: "#f97316", fillOpacity: 0.85 })
+        .bindPopup(`<div class="popup"><b>Development plan</b> · ${esc(r.record_id)}
+          <div>${esc(r.status || "")}${r.submitted_date ? ` · submitted ${esc(r.submitted_date)}` : ""}</div>
+          <div class="muted">Not a building permit.</div></div>`)
+        .addTo(chesPlanLayer);
+    }
+  } catch (err) {
+    toast(`Development plans unavailable: ${err.message}`, true);
+  }
+  renderChesControls();
+}
+
+$("ches-cases-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) { chesCaseLayer.addTo(map); loadChesCases(); } else { map.removeLayer(chesCaseLayer); renderChesControls(); }
+});
+$("ches-plans-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) { chesPlanLayer.addTo(map); loadChesPlans(); } else { map.removeLayer(chesPlanLayer); renderChesControls(); }
+});
+
 // ---------- parcels (Stage 3) ----------
 // Parcel flood is a screening estimate from area shares (the city's parcel
 // data is "not valid for flood-zone determination"); shares are always shown.

@@ -116,9 +116,23 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   for k, v in sorted(sq["boards"].items())]
         lines += ["", "- The RPA layer is the city's boundary line: parcels are reported as crossed by it or within "
                       "100 ft of it, never as RPA acres.",
-                  "- Screening estimates from city GIS layers, not determinations. Not covered: sewer / water "
-                  "capacity (no public data); hydric soils, NWI wetlands, VDOT, state / National Register "
-                  "historic boundaries (pending source access).", ""]
+                  "- Screening estimates from city, state and federal GIS layers, not determinations. Sewer / water "
+                  "capacity is never inferred: mains and service areas are shown as published. Each city's layers "
+                  "are measured only on that city's parcels.", ""]
+    for city, pq in sorted((q.get("pipeline_cities") or {}).items()):
+        lines += [f"## {city}: development pipeline (no building permits published)", "",
+                  "| source | records read (expected) | rows | loaded at |", "|---|---:|---:|---|"]
+        lines += [f"| {k} | {v['received_count']} ({v['expected_count']}) | {v['records']} | {v['loaded_at']} |"
+                  for k, v in sorted(pq["loads"].items())]
+        lines += ["",
+                  f"- Land-use cases by stage (the city's record): {pq['cases_by_stage']}; legacy 2014 imports "
+                  f"{pq['cases_legacy']}",
+                  f"- Cases linked to a parcel: {pq['cases_with_parcels']}; development records linked: "
+                  f"{pq['records_with_parcels']}",
+                  f"- Records by source / status: {pq['records_by_source_status']}",
+                  f"- Parcels: {pq['parcels']}; flood-tagged: {pq['parcels_flood_tagged']}",
+                  "- Development plans and right-of-way permits are not building permits and are not counted as "
+                  "permits.", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

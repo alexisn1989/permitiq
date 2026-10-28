@@ -280,8 +280,50 @@
       <p class="muted small">${esc(f.notice || "")}</p>`;
   }
 
+  const CASE_STAGE_TEXT = { approved: "Approved (city record)", denied: "Denied", withdrawn: "Withdrawn",
+    pending: "Pending", incomplete: "Incomplete", other: "Final action as printed" };
+
+  // c: GET /api/land-use/cases/{case_id} (a pipeline city's Development Tracking case). Escaped HTML.
+  function buildCaseHtml(c) {
+    const act = (a) => (a && (a.action || a.date)) ? `${esc(a.action || "–")}${a.date ? ` · ${esc(a.date)}` : ""}` : '<span class="muted">not recorded</span>';
+    const parcels = (c.parcels || []).map((p) =>
+      `<tr><td>${esc(p.gpin)}</td><td>${esc(p.prop_class || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td></tr>`).join("");
+    const recs = (c.development_records || []).map((r) =>
+      `<li>${esc(r.record_id)} · ${esc(r.record_type || "")} · ${esc(r.status || "")}${r.submitted_date ? ` · submitted ${esc(r.submitted_date)}` : ""}${r.approved_date ? ` · approved ${esc(r.approved_date)}` : ""}</li>`).join("");
+    const zoning = c.zoning_from || c.zoning_to ? `${esc(c.zoning_from || "–")} → ${esc(c.zoning_to || "–")}` : '<span class="muted">not recorded</span>';
+    return `
+      <section class="card">
+        <div class="card-head"><h2>${esc(c.case_type || "Land-use case")} · ${esc(c.case_id)}</h2>
+          <span class="status-pill">${esc(CASE_STAGE_TEXT[c.final.stage] || c.final.stage)}</span></div>
+        <p class="muted">${esc(c.address || "")}${c.applied_date ? ` · applied ${esc(c.applied_date)}` : ""}${c.final.date ? ` · final action ${esc(c.final.date)}` : ""}${c.legacy ? " · legacy record (2014 import)" : ""}</p>
+        <dl class="facts">
+          <div><dt>Project</dt><dd>${party(c.project, "The project name")}</dd></div>
+          <div><dt>Zoning</dt><dd>${zoning}</dd></div>
+          <div><dt>Housing units (as published)</dt><dd>${c.housing_units != null ? esc(fmtNum(c.housing_units)) : '<span class="muted">not recorded</span>'}</dd></div>
+          <div><dt>Staff recommendation</dt><dd>${esc(c.staff_recommendation || "–")}</dd></div>
+          <div><dt>Planning Commission</dt><dd>${act(c.planning_commission)}</dd></div>
+          <div><dt>City Council</dt><dd>${act(c.city_council)}</dd></div>
+          <div><dt>Architectural review</dt><dd>${act(c.architectural_review)}</dd></div>
+          <div><dt>Final (as printed)</dt><dd>${esc(c.final.as_printed || "–")}</dd></div>
+          <div><dt>City record</dt><dd>${c.source_link ? escLinkify(c.source_link) : esc(c.case_id)}</dd></div>
+        </dl>
+        <div id="case-map" class="mini-map"></div>
+      </section>
+      <section class="card">
+        <h3>Parcels</h3>
+        ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Class · area</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No parcel linked.</p>'}
+      </section>
+      ${buildConstraintsHtml(c.site_constraints)}
+      <section class="card">
+        <h3>Development plans and right-of-way permits on these parcels</h3>
+        ${recs ? `<ul>${recs}</ul>` : '<p class="muted">None published.</p>'}
+        <p class="muted small">The city publishes no building permits, so construction cannot be confirmed here.</p>
+      </section>
+      <p class="muted small">${esc(c.notice || "")}</p>`;
+  }
+
   const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml,
-    buildCouncilHtml, buildConstraintsHtml };
+    buildCouncilHtml, buildConstraintsHtml, buildCaseHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

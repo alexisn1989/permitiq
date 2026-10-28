@@ -223,7 +223,9 @@ def public_case(row: dict, domain: dict) -> dict:
         "city_council": {"action": label(row["cc_action"]), "date": row["cc_date"]},
         "architectural_review": {"action": label(row["arc_action"]), "date": row["arc_date"]},
         "final": {"stage": row["stage"], "as_printed": row["final_raw"], "date": row["final_date"]},
-        "planner": row["planner"], "notes": row["notes"], "legacy": bool(row["legacy"]),
+        # the city's free-text notes can name private individuals (owners, requesters) and are never served;
+        # the assigned planner is not a lead fact
+        "legacy": bool(row["legacy"]),
         "source_link": row["source_link"], "lat": row["lat"], "lng": row["lng"],
     }
 
@@ -232,7 +234,8 @@ def public_record(row: dict) -> dict:
     return {
         "locality": row["locality"], "source": row["source"], "record_id": row["record_id"],
         "record_type": row["record_type"], "project_type": row["project_type"], "status": row["status"],
-        "details": row["details"], "organization": public_name(row["organization"]), "address": row["address"],
+        # plan titles can name an owner ("... Property of <name>"): shown only when clearly an organization
+        "details": public_name(row["details"]), "organization": public_name(row["organization"]), "address": row["address"],
         "submitted_date": row["submitted_date"], "approved_date": row["approved_date"],
         "expires_date": row["expires_date"], "parcel_ids": json.loads(row["parcel_ids_json"]),
         "gpins": json.loads(row["gpins_json"]), "lat": row["lat"], "lng": row["lng"],

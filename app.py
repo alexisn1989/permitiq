@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import constraints as constraints_mod, council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
+from ingest import chesapeake_records, constraints as constraints_mod, council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
     pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
@@ -936,6 +936,112 @@ def filing_detail(pln_id: str):
         out["data_as_of"] = quality.data_as_of(conn)
     out["notice"] = FILING_NOTICE
     return out
+
+
+CASE_NOTICE = ("Stages and actions are the city's own published record (Development Tracking); action codes are "
+               "labelled from the layer's own coded domain. Chesapeake publishes no building permits, so no case is "
+               "linked to construction. The city's free-text notes are not shown (they can name private individuals).")
+RECORD_NOTICE = ("Development plans and right-of-way permits as the city publishes them. They are not building permits "
+                 "and are not counted as permits. Names of private individuals are not shown.")
+
+
+def _case_domain(conn) -> dict:
+    load = conn.execute("SELECT domain_json FROM city_record_loads WHERE source = 'ches_cases' "
+                        "AND is_active = 1").fetchone()
+    return json.loads(load[0]) if load and load[0] else {}
+
+
+def _record_load(conn, source: str) -> Optional[dict]:
+    load = conn.execute("SELECT locality, source, source_url, expected_count, received_count, records, loaded_at, "
+                        "parcel_load_id FROM city_record_loads WHERE source = ? AND is_active = 1", (source,)).fetchone()
+    return dict(load) if load else None
+
+
+def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
+    """Parcels of the active loads by their exact parcel id (already linked; no GPIN10 fallback)."""
+    return [dict(r) for r in conn.execute(
+        "SELECT p.gpin, l.locality, p.zoning, p.prop_class, p.prop_address, ROUND(p.tax_area_sqft / 43560.0, 4) AS acreage, "
+        "(p.minx + p.maxx) / 2 AS lng, (p.miny + p.maxy) / 2 AS lat, pf.parcel_flood_class, pf.share_sfha_v, "
+        "pf.share_sfha_a, pf.share_shaded_x FROM json_each(?) g JOIN parcels p ON p.gpin = g.value "
+        "JOIN parcel_loads l ON l.load_id = p.load_id AND l.is_active = 1 "
+        "LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin ORDER BY p.gpin LIMIT 25", (json.dumps(gpins),))]
+
+
+@app.get("/api/land-use/cases")
+def cases_route(
+    stage: Optional[list[str]] = Query(None), case_type: Optional[list[str]] = Query(None),
+    applied_from: Optional[str] = None, applied_to: Optional[str] = None, include_legacy: bool = False,
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """A pipeline city's land-use cases (Chesapeake Development Tracking)."""
+    _validate_date(applied_from, "applied_from")
+    _validate_date(applied_to, "applied_to")
+    stages = parse_tokens(stage, db_module.CASE_STAGES, "stage")
+    types = parse_tokens(case_type, None, "case_type")
+    where, args = [], []
+    if stages:
+        where.append(f"stage IN ({','.join('?' * len(stages))})")
+        args += stages
+    if types:
+        where.append(f"case_type IN ({','.join('?' * len(types))})")
+        args += types
+    if applied_from:
+        where.append("applied_date >= ?")
+        args.append(applied_from)
+    if applied_to:
+        where.append("applied_date <= ?")
+        args.append(applied_to)
+    if not include_legacy:
+        where.append("legacy = 0")
+    sql = ("SELECT * FROM land_use_cases_effective" + (" WHERE " + " AND ".join(where) if where else "")
+           + " ORDER BY applied_date IS NULL, applied_date DESC, case_id LIMIT ?")
+    with _ro() as conn:
+        domain = _case_domain(conn)
+        items = [chesapeake_records.public_case(dict(r), domain) for r in conn.execute(sql, (*args, limit))]
+        load = _record_load(conn, "ches_cases")
+    return {"cases": items, "count": len(items), "load": load, "notice": CASE_NOTICE}
+
+
+@app.get("/api/land-use/cases/{case_id}")
+def case_detail(case_id: str):
+    with _ro() as conn:
+        r = conn.execute("SELECT * FROM land_use_cases_effective WHERE case_id = ?", (case_id,)).fetchone()
+        if r is None:
+            raise HTTPException(404, "case not found")
+        r = dict(r)
+        out = chesapeake_records.public_case(r, _case_domain(conn))
+        out["parcels"] = _exact_parcels(conn, out["gpins"])
+        out["development_records"] = [chesapeake_records.public_record(dict(x)) for x in conn.execute(
+            "SELECT DISTINCT d.* FROM development_records_effective d, json_each(d.gpins_json) g "
+            "WHERE g.value IN (SELECT value FROM json_each(?)) ORDER BY d.submitted_date LIMIT 50", (r["gpins_json"],))]
+        out["geometry"] = json.loads(r["geom_geojson"]) if r["geom_geojson"] else None
+        out["site_constraints"] = constraints_mod.public_constraints(conn, out["gpins"])
+        out["data_as_of"] = quality.data_as_of(conn)
+    out["notice"] = CASE_NOTICE
+    return out
+
+
+@app.get("/api/development-records")
+def development_records_route(
+    source: Optional[list[str]] = Query(None), status: Optional[list[str]] = Query(None),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """Development plans and right-of-way permits (never counted as building permits)."""
+    sources = parse_tokens(source, tuple(k for k in chesapeake_records.SOURCES if k != "ches_cases"), "source")
+    statuses = parse_tokens(status, None, "status")
+    where, args = [], []
+    if sources:
+        where.append(f"source IN ({','.join('?' * len(sources))})")
+        args += sources
+    if statuses:
+        where.append(f"status IN ({','.join('?' * len(statuses))})")
+        args += statuses
+    sql = ("SELECT * FROM development_records_effective" + (" WHERE " + " AND ".join(where) if where else "")
+           + " ORDER BY submitted_date IS NULL, submitted_date DESC, record_id LIMIT ?")
+    with _ro() as conn:
+        items = [chesapeake_records.public_record(dict(r)) for r in conn.execute(sql, (*args, limit))]
+        loads = [x for x in (_record_load(conn, s) for s in ("ches_dev_plans", "ches_row_permits")) if x]
+    return {"records": items, "count": len(items), "loads": loads, "notice": RECORD_NOTICE}
 
 
 CLERK_ITEM_SQL = """SELECT c.*, (SELECT COUNT(*) FROM clerk_pc_links l WHERE l.clerk_item_key = c.item_key

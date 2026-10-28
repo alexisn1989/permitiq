@@ -10,8 +10,9 @@ const QUEUE_KEY = "permitiq.linkReviewQueue.v1";
 const key = new URLSearchParams(location.search).get("key");
 const pcKey = new URLSearchParams(location.search).get("pc");
 const filingId = new URLSearchParams(location.search).get("filing");
+const caseId = new URLSearchParams(location.search).get("case");
 
-// esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml and buildFilingHtml come from /static/lead_util.js.
+// esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml and buildCaseHtml come from /static/lead_util.js.
 
 function pct(v) { return v == null ? "–" : `${(100 * v).toFixed(1)}%`; }
 
@@ -258,7 +259,26 @@ async function bootFiling() {
   }
 }
 
+async function bootCase() {
+  try {
+    const res = await fetch(`/api/land-use/cases/${encodeURIComponent(caseId)}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+    $("lead").innerHTML = buildCaseHtml(body);
+    const shape = body.geometry || (body.lat != null ? { type: "Point", coordinates: [body.lng, body.lat] } : null);
+    if (window.L && shape) {
+      const map = L.map("case-map", { zoomControl: false, attributionControl: false });
+      const layer = L.geoJSON(shape, { style: { color: "#38bdf8", weight: 2, fillOpacity: 0.15 } }).addTo(map);
+      if (shape.type === "Point") map.setView(layer.getBounds().getCenter(), 17);
+      else map.fitBounds(layer.getBounds().pad(0.3));
+    }
+  } catch (err) {
+    $("lead").innerHTML = `<p class="warn">Could not load this case: ${esc(err.message)}</p>`;
+  }
+}
+
 async function boot() {
+  if (caseId) { bootCase(); return; }
   if (filingId) { bootFiling(); return; }
   if (pcKey) { bootPc(); return; }
   if (!key) { $("lead").innerHTML = '<p class="warn">No decision key in the address (?key=…).</p>'; return; }
