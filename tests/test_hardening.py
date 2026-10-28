@@ -710,3 +710,32 @@ def test_inspect_pc_actions_layer_profile_is_read_only(tmp_path, monkeypatch):
     assert prof["date_meaning"].startswith("undetermined")  # never asserted by the script
     assert all(p.get("f") == "json" for _, p in calls)
     assert sorted(x.name for x in tmp_path.rglob("*") if x.is_file()) == ["pc_actions_profile.json"]
+
+
+# ---------- real-run fixes ----------
+
+def test_old_dfirm_id_is_corrected_on_migration(tmp_path):
+    p = tmp_path / "old.db"
+    db_module.init_db(p)
+    with db_module.db(p) as conn:
+        conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '51810C' WHERE locality = 'virginia_beach'")
+    db_module.init_db(p)
+    with db_module.db_readonly(p) as conn:
+        assert conn.execute("SELECT dfirm_id FROM flood_locality_dfirm WHERE locality = 'virginia_beach'"
+                            ).fetchone()[0] == "515531"
+
+
+def test_objectid_lookups_stay_under_url_limit(monkeypatch):
+    from ingest import backfill_check
+    calls = []
+
+    def fake(params):
+        ids = params["objectIds"].split(",")
+        calls.append(len(ids))
+        return {"features": [{"attributes": {"OBJECTID": int(i), "PermitNumber": f"P{i}"}} for i in ids]}
+    monkeypatch.setattr(vb_adapter, "query_json", fake)
+    got = backfill_check.source_permit_numbers(list(range(1, 451)))
+    assert len(got) == 450 and calls and max(calls) <= vb_adapter.ID_BATCH == 200
+    calls.clear()
+    list(vb_adapter.fetch_by_ids(list(range(1, 451))))
+    assert max(calls) <= 200 and sum(calls) == 450

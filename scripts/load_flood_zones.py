@@ -1,9 +1,10 @@
 """Load FEMA National Flood Hazard Layer polygons (S_FLD_HAZ_AR) for one
-DFIRM -- Virginia Beach is 51810C -- into flood_zones, as a new revision in
+DFIRM -- Virginia Beach is 515531 -- into flood_zones, as a new revision in
 flood_zone_loads, and pre-build the map's display grid cells.
 
-Source: FEMA NFHL MapServer layer 28, where=DFIRM_ID='<id>', f=geojson,
-outSR=4326, paged. The layer is checked first (polygon geometry + FLD_ZONE
+Source: FEMA NFHL MapServer layer 28, where=DFIRM_ID='<id>': count and
+OBJECTID list, then features by ID batch (f=geojson, outSR=4326), every ID
+verified. The layer is checked first (polygon geometry + FLD_ZONE
 field) so a wrong layer number fails loudly. Ported from the PostGIS
 pipeline's scripts/load_fema_nfhl.py (branch postgis-pipeline).
 
@@ -28,7 +29,7 @@ scripts/tag_flood_zones.py runs.
 Usage:
   python scripts/load_flood_zones.py --dry-run
   python scripts/load_flood_zones.py
-  python scripts/load_flood_zones.py --file nfhl_51810C.geojson   # a downloaded FeatureCollection
+  python scripts/load_flood_zones.py --file nfhl_515531.geojson   # a downloaded FeatureCollection
 """
 
 from __future__ import annotations
@@ -47,8 +48,9 @@ from ingest import flood  # noqa: E402
 from ingest.common import fetch_json_retry  # noqa: E402
 from shapely.geometry import mapping  # noqa: E402
 
-DEFAULT_URL = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28"
-DEFAULT_DFIRM = "51810C"
+# checked live 2026-10-28: the older /gis/nfhl/rest/... path now answers 404
+DEFAULT_URL = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28"
+DEFAULT_DFIRM = "515531"  # live NFHL id for Virginia Beach (not the "51810C" panel-style id)
 RUN_LOCALITY = "fema_nfhl"  # ingestion_runs.locality for flood loads
 
 fetch_json = fetch_json_retry  # indirection so tests can stub the network
@@ -67,23 +69,49 @@ def check_layer(url: str) -> dict:
     return meta
 
 
+def _feature_id(f: dict, oid_field: str):
+    if f.get("id") is not None:
+        return f["id"]
+    return next((v for k, v in (f.get("properties") or {}).items() if k.upper() == oid_field.upper()), None)
+
+
 def fetch_features(url: str, dfirm: str, page_size: int, oid_field: str) -> list[dict]:
-    out, offset = [], 0
-    while True:
-        data = fetch_json(f"{url}/query", {
-            "where": f"DFIRM_ID = '{dfirm}'", "outFields": "*", "returnGeometry": "true",
-            "outSR": 4326, "orderByFields": oid_field, "resultOffset": offset,
-            "resultRecordCount": page_size, "f": "geojson",
-        })
-        feats = data.get("features") or []
-        if not feats:
-            return out
-        out.extend(feats)
-        offset += len(feats)
-        # ArcGIS GeoJSON reports the flag under "properties"; esri JSON top-level.
-        exceeded = data.get("exceededTransferLimit") or (data.get("properties") or {}).get("exceededTransferLimit")
-        if len(feats) < page_size and not exceeded:
-            return out
+    """Every polygon of one DFIRM, fetched by OBJECTID: the layer's own count and
+    ID list first, then ID batches. FEMA answers 500 for some offset pages of
+    large polygons (seen live for Virginia Beach, 2026-10-28) although each
+    feature downloads alone, so a failed batch is split in half until it
+    succeeds; a single feature that still fails, or any ID that never
+    arrives, aborts the load (nothing written)."""
+    where = f"DFIRM_ID = '{dfirm}'"
+    expected = int(fetch_json(f"{url}/query", {"where": where, "returnCountOnly": "true", "f": "json"})["count"])
+    ids = sorted(fetch_json(f"{url}/query", {"where": where, "returnIdsOnly": "true", "f": "json"}
+                            ).get("objectIds") or [])
+    if len(set(ids)) != len(ids) or len(ids) != expected:
+        raise LoadError(f"DFIRM {dfirm}: count {expected} but {len(ids)} object IDs ({len(set(ids))} unique)")
+    out: list[dict] = []
+
+    def get(batch: list[int]) -> None:
+        try:
+            data = fetch_json(f"{url}/query", {
+                "objectIds": ",".join(str(i) for i in batch), "outFields": "*", "returnGeometry": "true",
+                "outSR": 4326, "f": "geojson"})
+        except RuntimeError:
+            if len(batch) == 1:
+                raise LoadError(f"DFIRM {dfirm}: feature {batch[0]} could not be fetched") from None
+            get(batch[:len(batch) // 2])
+            get(batch[len(batch) // 2:])
+            return
+        out.extend(data.get("features") or [])
+
+    step = max(1, min(page_size, 100))  # objectIds go in the URL: keep it short
+    for i in range(0, len(ids), step):
+        get(ids[i:i + step])
+    got = [_feature_id(f, oid_field) for f in out]
+    missing, dups = set(ids) - set(got), len(got) - len(set(got))
+    if missing or dups or len(got) != expected:
+        raise LoadError(f"DFIRM {dfirm}: expected {expected} features, received {len(got)} "
+                        f"({len(missing)} missing, {dups} duplicated); nothing written")
+    return out
 
 
 def _prop(props: dict, name: str):

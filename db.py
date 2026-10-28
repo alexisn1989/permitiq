@@ -255,7 +255,10 @@ _SCHEMA_V2_STATEMENTS = [
         dfirm_id TEXT NOT NULL
     )
     """,
-    "INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('virginia_beach', '51810C')",
+    # Virginia Beach's flood zones are filed under DFIRM_ID '515531' in FEMA's NFHL layer 28 (checked
+    # against the live service 2026-10-28: 3,647 zones; '51810C' returns none). Databases seeded with
+    # the old id are corrected by init_db on every migration; a load stored under '51810C' must be re-run.
+    "INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('virginia_beach', '515531')",
     """
     CREATE TABLE IF NOT EXISTS permit_flood (
         permit_id    INTEGER PRIMARY KEY REFERENCES permits(id),
@@ -1341,6 +1344,9 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 9:
             for statement in _SCHEMA_V9_STATEMENTS:
                 conn.execute(statement)
+        # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
+        conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
+                     "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")
         if current_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

@@ -214,7 +214,7 @@ def test_partial_unique_index_rejects_second_active_load(isolated_db):
     with db_module.db(isolated_db) as conn:
         ins = ("INSERT INTO flood_zone_loads (dfirm_id, source_url, content_hash, feature_count, display_bytes, "
                "max_cell_bytes, simplify_tolerance, display_ok, loaded_at, is_active) "
-               "VALUES ('51810C', 'x', ?, 1, 1, 1, 0.1, 1, 'now', ?)")
+               "VALUES ('515531', 'x', ?, 1, 1, 1, 0.1, 1, 'now', ?)")
         conn.execute(ins, ("a", 1))
         conn.execute(ins, ("b", 0))
         with pytest.raises(sqlite3.IntegrityError):
@@ -223,25 +223,52 @@ def test_partial_unique_index_rejects_second_active_load(isolated_db):
 
 def test_service_paging_with_stubbed_fetch(vb_db, monkeypatch):
     feats = json.loads(FIXTURE.read_text())["features"]
+    for i, f in enumerate(feats):
+        f["id"] = 100 + i
     calls = []
 
     def fake_fetch(url, params=None, **kw):
         calls.append(params)
         if url.endswith("/28"):
             return {"geometryType": "esriGeometryPolygon", "fields": [{"name": "FLD_ZONE"}],
-                    "maxRecordCount": 2, "objectIdField": "OBJECTID"}
-        off = params["resultOffset"]
-        page = feats[off:off + params["resultRecordCount"]]
-        return {"type": "FeatureCollection", "features": page,
-                "properties": {"exceededTransferLimit": off + len(page) < len(feats)}}
+                    "maxRecordCount": 4, "objectIdField": "OBJECTID"}
+        if params.get("returnCountOnly"):
+            return {"count": len(feats)}
+        if params.get("returnIdsOnly"):
+            return {"objectIds": [f["id"] for f in feats]}
+        ids = [int(x) for x in params["objectIds"].split(",")]
+        if len(ids) > 1 and 102 in ids:  # like FEMA: a batch holding a large polygon fails, the feature alone works
+            raise RuntimeError("500 Server Error")
+        return {"type": "FeatureCollection", "features": [f for f in feats if f["id"] in ids]}
 
     monkeypatch.setattr(loader, "fetch_json", fake_fetch)
-    assert loader.main([]) == 0
-    # a full last page is followed by one empty probe page
-    assert [c["resultOffset"] for c in calls[1:]] == [0, 2, 4, 6]
-    assert all(c["where"] == "DFIRM_ID = '51810C'" and c["outSR"] == 4326 for c in calls[1:])
+    assert loader.main(["--page-size", "4"]) == 0
+    batches = [c["objectIds"] for c in calls if c.get("objectIds")]
+    assert batches == ["100,101,102,103", "100,101", "102,103", "102", "103", "104,105"]  # failed batch split
+    assert all(c.get("where", "DFIRM_ID = '515531'") == "DFIRM_ID = '515531'" for c in calls[1:])
     with db_module.db_readonly(vb_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM flood_zones").fetchone()[0] == 5
+
+
+def test_missing_feature_aborts_load(vb_db, monkeypatch):
+    feats = json.loads(FIXTURE.read_text())["features"]
+    for i, f in enumerate(feats):
+        f["id"] = 100 + i
+
+    def fake_fetch(url, params=None, **kw):
+        if url.endswith("/28"):
+            return {"geometryType": "esriGeometryPolygon", "fields": [{"name": "FLD_ZONE"}], "maxRecordCount": 2}
+        if params.get("returnCountOnly"):
+            return {"count": len(feats)}
+        if params.get("returnIdsOnly"):
+            return {"objectIds": [f["id"] for f in feats]}
+        ids = [int(x) for x in params["objectIds"].split(",")]
+        return {"features": [f for f in feats if f["id"] in ids and f["id"] != 103]}  # one never arrives
+
+    monkeypatch.setattr(loader, "fetch_json", fake_fetch)
+    assert loader.main([]) == 1
+    with db_module.db_readonly(vb_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM flood_zones").fetchone()[0] == 0
 
 
 def test_wrong_layer_fails_loudly(vb_db, monkeypatch):

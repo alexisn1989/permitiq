@@ -107,4 +107,4 @@ def test_migrate_v1_database_keeps_rows(tmp_path):
     with db_module.db_readonly(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM permits").fetchone()[0] == 1
         assert conn.execute("SELECT effective_class FROM permit_flood_effective").fetchone()[0] == "untagged"
-        assert conn.execute("SELECT dfirm_id FROM flood_locality_dfirm WHERE locality='virginia_beach'").fetchone()[0] == "51810C"
+        assert conn.execute("SELECT dfirm_id FROM flood_locality_dfirm WHERE locality='virginia_beach'").fetchone()[0] == "515531"

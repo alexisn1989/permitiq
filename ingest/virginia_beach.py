@@ -33,6 +33,9 @@ BASE_URL = (
 )
 SOURCE_RECORD_URL = BASE_URL
 PAGE_SIZE = 2000  # confirmed live: this service's maxRecordCount is 2000
+# objectIds lists go in a GET URL: 2,000 IDs made the URL too long (the service answered
+# 400 Bad Request on the real backfill check); 200 IDs keep it near 1.5 KB.
+ID_BATCH = 200
 
 OUT_FIELDS = [
     "PermitNumber", "PermitType", "ApplicationDate", "IssueDate", "FinalDate",
@@ -118,11 +121,11 @@ def query_json(params: dict) -> dict:
 
 def fetch_by_ids(object_ids: list[int]):
     """Re-fetch specific source rows by OBJECTID (backfill top-up), in batches of
-    at most PAGE_SIZE, through the same normalizer as fetch(). Rows without a
+    ID_BATCH, through the same normalizer as fetch(). Rows without a
     PermitNumber are skipped exactly as fetch() skips them."""
     ids = sorted(set(object_ids))
-    for i in range(0, len(ids), PAGE_SIZE):
-        response = query_json({"objectIds": ",".join(str(x) for x in ids[i:i + PAGE_SIZE]),
+    for i in range(0, len(ids), ID_BATCH):
+        response = query_json({"objectIds": ",".join(str(x) for x in ids[i:i + ID_BATCH]),
                                "outFields": ",".join(OUT_FIELDS)})
         for feat in response.get("features") or []:
             attrs = feat.get("attributes", {})

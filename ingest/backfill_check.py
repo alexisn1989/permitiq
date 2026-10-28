@@ -32,7 +32,7 @@ from datetime import date
 
 from ingest import virginia_beach as vb
 
-ID_BATCH = vb.PAGE_SIZE
+ID_BATCH = vb.ID_BATCH
 
 
 def where_since(since: str) -> str:

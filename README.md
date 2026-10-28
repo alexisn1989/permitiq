@@ -228,7 +228,7 @@ The API is read-only: it opens SQLite with `mode=ro`, never creates or migrates 
 python scripts/migrate_db.py                 # schema v2: flood tables + permit_flood_effective view
 python scripts/profile_vb_fields.py          # observed PermitType / WorkType / ConstructionType values
 #   -> fill [cohort].include in config/flood_report.toml from that output (ships empty on purpose)
-python scripts/load_flood_zones.py --dry-run # FEMA NFHL layer 28, DFIRM 51810C: feature count, zone mix, cell sizes
+python scripts/load_flood_zones.py --dry-run # FEMA NFHL layer 28, DFIRM 515531: feature count, zone mix, cell sizes
 python scripts/load_flood_zones.py
 python scripts/tag_flood_zones.py --dry-run  # before -> after class transitions
 python scripts/tag_flood_zones.py

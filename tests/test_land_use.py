@@ -531,7 +531,7 @@ def test_decision_flood_class_from_linked_permits(linked):
     from ingest.flood import FloodIndex  # noqa: F401 - flood tagging covered in test_flood
     with db_module.db(linked["db"]) as conn:
         conn.execute("INSERT INTO flood_zone_loads (dfirm_id, content_hash, feature_count, loaded_at, is_active) "
-                     "VALUES ('51810C', 'h', 1, 'now', 1)")
+                     "VALUES ('515531', 'h', 1, 'now', 1)")
         p1 = pid(conn, "P1")
         conn.execute("INSERT INTO permit_flood (permit_id, load_id, tagged_lat, tagged_lng, flood_class, sfha, "
                      "fld_zone, tagged_at) VALUES (?, 1, 36.85, -76.0, 'sfha_a', 1, 'AE', 'now')", (p1,))
@@ -582,7 +582,7 @@ def test_migrate_v2_to_v3_keeps_permits_and_flood_tags(tmp_path):
     with db_module.db(path) as conn:
         upsert_permits(conn, [vb("P1", "1 A ST", "2025-01-01")])
         conn.execute("INSERT INTO flood_zone_loads (dfirm_id, content_hash, feature_count, loaded_at, is_active) "
-                     "VALUES ('51810C', 'h', 1, 'now', 1)")
+                     "VALUES ('515531', 'h', 1, 'now', 1)")
         conn.execute("INSERT INTO permit_flood (permit_id, load_id, tagged_lat, tagged_lng, flood_class, tagged_at) "
                      "VALUES (1, 1, 36.85, -76.0, 'sfha_a', 'now')")
         for v in ("land_use_decision_status", "decision_flood_effective"):
@@ -729,7 +729,7 @@ def test_out_of_window_link_is_invisible_everywhere(linked):
                      "is_new_construction, link_run_at) VALUES ('vb:M2:R6', ?, 'manual', 'x', 'confirmed', 1, 'now')",
                      (p5,))
         conn.execute("INSERT INTO flood_zone_loads (dfirm_id, content_hash, feature_count, loaded_at, is_active) "
-                     "VALUES ('51810C', 'h', 1, 'now', 1)")
+                     "VALUES ('515531', 'h', 1, 'now', 1)")
         conn.execute("INSERT INTO permit_flood (permit_id, load_id, tagged_lat, tagged_lng, flood_class, sfha, "
                      "fld_zone, tagged_at) VALUES (?, 1, 36.85, -76.0, 'sfha_a', 1, 'AE', 'now')", (p5,))
     assert statuses(linked)["vb:M2:R6"] == "no_candidate_permit"
