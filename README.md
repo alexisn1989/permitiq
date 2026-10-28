@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **515 tests**, all passing, zero live network calls |
+| **Test suite** | **526 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -514,6 +514,49 @@ python scripts/run_vb_pipeline.py --phase full --constraints ...
   - constraint columns in `filing_leads.csv` and `pc_leads.csv`;
   - a quality-report section and checklist line.
 
+### Chesapeake: a pipeline city (no building permits published)
+
+Chesapeake publishes no individual building permits. Its `BuildingActivity` layer is right-of-way and franchise utility permits. It does publish its development pipeline, so Chesapeake is loaded as a pipeline city (`ingest/chesapeake_records.py`, schema v14):
+
+```bash
+python scripts/load_parcels.py --locality chesapeake         # 92,805 parcel features (MAP_PARCEL, 13 digits)
+python scripts/load_flood_zones.py --dfirm 510034           # FEMA NFHL for Chesapeake
+python scripts/load_chesapeake.py --all                     # cases, development plans, ROW permits
+python scripts/tag_parcel_flood.py --locality chesapeake
+python scripts/load_constraints.py --layer ches_rpa_buffer  # ... each ches_ layer
+python scripts/tag_parcel_constraints.py --locality chesapeake
+python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.csv, development_plans.csv
+```
+
+- **Land-use cases** (Development Tracking): use permits, subdivisions, rezonings, site plans, PUDs.
+  - 3,789 features become 3,738 cases (multi-polygon cases are merged).
+  - Each case carries its Planning Commission, City Council and architectural-review actions and dates, the staff recommendation, and the final action.
+  - Action codes are labelled from the layer's own coded domain. An unknown code stops the load.
+  - 627 rows were imported from a 2014 shapefile. They are marked legacy and hidden from lists unless asked for.
+- **Development plans** (1,327) and **right-of-way permits** (1,035) live in `development_records`. They are never stored as or counted as permits.
+- **Parcel links:**
+  - by parcel number first, then spatially;
+  - 97.6% of cases, 98.9% of plans and 98.7% of ROW permits have a parcel.
+- **Site constraints for Chesapeake** (`ches_` layers, measured only on Chesapeake parcels):
+  - RPA buffer polygons: acres are measurable here, unlike Virginia Beach's boundary line;
+  - Chesapeake Bay Preservation Areas, proffered rezoning areas, zoning;
+  - the local historic district, the Great Bridge gateway, the Watershed Protection District;
+  - the Fentress APZ, overlay and restricted easement;
+  - shrink-swell soils;
+  - USDA soils (VA550), NWI, National Register, VDOT.
+- **Public sewer and water, as published:**
+  - the HRSD service area;
+  - pump-station service areas;
+  - areas without city sewer or water;
+  - the nearest gravity sewer main and water line, with size, material and year.
+
+  Capacity is never inferred.
+- **Privacy:**
+  - the city's free-text case notes are never served, since they can name owners or requesters;
+  - project names and plan titles are shown only when clearly an organization;
+  - staff login IDs on the plan layer are never stored.
+- **Not available:** "approved → permit" for Chesapeake, because there is no permit data. Building permits sit behind Accela Citizen Access. A public export or a FOIA request is the route; the search site is not scraped.
+
 ---
 
 ## API
@@ -546,6 +589,9 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/land-use/filings/{pln_id}` | One application: boundary, parcels, Planning Commission items, Council actions, same-parcel permits since filing |
 | `GET /api/parcels/{gpin}/constraints` | Site constraints of one parcel: measured facts per layer, board history, layers checked, what is not covered |
 | `GET /api/constraints/{layer}.geojson?bbox=` | One constraint layer inside a map view (display only; 413 above 2,000 features) |
+| `GET /api/land-use/cases` | A pipeline city's land-use cases (Chesapeake); filters `stage`, `case_type`, `applied_from/to`, `include_legacy` |
+| `GET /api/land-use/cases/{case_id}` | One case: city actions, parcels, flood, site constraints, development records on the same parcels |
+| `GET /api/development-records` | Development plans and right-of-way permits (not building permits); filters `source`, `status` |
 | `GET /api/land-use/council-actions` | Land-use items from the Clerk's Summary of Council Actions; filters `outcome`, `district`, `date_from/to`; archive coverage |
 | `GET /api/land-use/council-actions/{key}` | One Council action: outcome, tally, addresses, the PC items it decides (or possibly decides), the Clerk's page |
 | `GET /api/audit/{review_table}` | Change history of one review; query parameters are exactly the table's key (e.g. `decision_link_review?decision_key=…&permit_id=…`); 400 otherwise |
@@ -560,7 +606,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**515 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**526 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 
@@ -572,7 +618,7 @@ Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate
 |---|---|
 | **Norfolk** | Live — Socrata SODA API, updated daily |
 | **Virginia Beach** | Live — ArcGIS REST feature layer |
-| Chesapeake | Source under review — permit system exists, no verified point-level open dataset found |
+| Chesapeake | Pipeline only — land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits are not published |
 | Portsmouth | Source under review — see the North Carolina lookalike above |
 | Hampton · Suffolk · Newport News | Unavailable — no confirmed open dataset located |
 
@@ -589,7 +635,7 @@ Other limitations stated plainly:
 
 ## What I'd build next
 
-- **Chesapeake / Portsmouth adapters** — blocked on source discovery, not implementation. The adapter interface is a single `fetch(since, limit)` generator; adding a verified locality is a contained change.
+- **Chesapeake building permits** (Accela export or FOIA) and a **Portsmouth adapter**: blocked on source access, not implementation. The adapter interface is a single `fetch(since, limit)` generator; adding a verified locality is a contained change.
 - **Address normalization pass** for the 132 `not_found` records — several are formatting artifacts (`"1234 Gwaltney Way : -"`) that a cleanup step would likely resolve.
 - **Split `skipped_count`** in `ingestion_runs` into `skipped_duplicate` vs `skipped_invalid` — currently one aggregate where the distinction is already known at runtime.
 - **Scheduled ingestion** via Task Scheduler/cron, keeping the strict no-HTTP-triggered-writes rule intact.
