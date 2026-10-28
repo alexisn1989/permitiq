@@ -105,6 +105,9 @@ STATE_SQL = {
     "permit_flood": "SELECT permit_id, load_id, flood_class, tagged_lat, tagged_lng FROM permit_flood ORDER BY 1",
     "coverage": "SELECT locality, backfill_from, backfill_run_id, last_refresh_run_id, link_window_months, "
                 "max_staleness_days FROM permit_coverage ORDER BY 1",
+    "clerk_items": "SELECT item_key, entry_id, page, outcome, deferred_to, aye, nay, motion_raw, request_types_json "
+                   "FROM clerk_items WHERE is_land_use = 1 ORDER BY 1",
+    "clerk_pc_links": "SELECT clerk_item_key, pc_item_key, matched_on, ambiguous FROM clerk_pc_links ORDER BY 1, 2",
 }
 
 
@@ -385,6 +388,17 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
         checked = f.get("sampled", 0) - f.get("unchecked", 0) - f.get("stale", 0)
         need = min(min_n, f["population"])
         add("Flood disagreements checked", checked >= need, f"{checked} of {need} needed (N={f['population']})")
+    for item, key in (("Council outcomes checked against the Clerk's page", "council_outcomes"),
+                      ("Council-to-hearing links checked", "council_links")):
+        c = (acc.get("results") or {}).get(key) if acc.get("freshness") == "fresh" else None
+        if c is None:
+            add(item, None, f"accuracy tally {acc.get('freshness', 'none')}"
+                + ("" if acc.get("freshness") != "fresh" else "; this stratum was not sampled"))
+        else:
+            need = min(min_n, c["population"])
+            add(item, c["adjudicated"] >= need and c["population"] > 0,
+                f"{c['adjudicated']} of {need} needed (N={c['population']}); precision {c['precision']}, "
+                f"95% {c['wilson95']}, can't tell {c['cant_tell']}")
     pc = q.get("planning_commission")
     if pc is None:
         add("Planning Commission coverage verified", None, "no Planning Commission documents ingested")

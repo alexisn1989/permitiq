@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **497 tests**, all passing, zero live network calls |
+| **Test suite** | **498 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -336,6 +336,10 @@ python scripts/run_vb_pipeline.py --phase full ... --reviews-dir reviews\   # re
   - each stratum's population N, the seed and the selection rule;
   - per-row fact fingerprints and a sheet hash.
 - **Judgments are explicit.** Links use `same_project`. Leads use `lead_check` plus a required `search_done`, an independent search outside `permits.db`. Flood disagreements use `flood_check`.
+- **The Council chain has its own strata** (from the Clerk's Summary of Council Actions, so they do not wait on the VoteIQ export):
+  - `council_outcome` (`outcome_check`: right / wrong / cant_tell): were the outcome, deferral date and tally read correctly from the Clerk's page?
+  - `council_link` (`same_application`: yes / no / cant_tell): are the Council item and the Planning Commission item the same application? Ambiguous links are not sampled; they set no stage.
+  - Rows carry links to the Clerk's page and the agenda PDF, never names or subject text. They are measurements only, never applied as reviews; the checklist counts them toward "Council outcomes checked" and "Council-to-hearing links checked".
 - **The tally** (`accuracy_tally.py`):
   - refuses an edited sheet;
   - drops rows whose facts changed;
@@ -496,7 +500,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**497 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**498 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

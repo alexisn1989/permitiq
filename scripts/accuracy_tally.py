@@ -74,6 +74,16 @@ def validate(rows: list[dict]) -> list[str]:
     return errors
 
 
+def _measure(rs, stratum, col, good, bad, meta, stale_ids, what) -> dict:
+    """A precision stratum: good / (good + bad) among checked, fresh rows."""
+    c = Counter("stale" if f"{stratum}:{r['row_id']}" in stale_ids else (r[col] or "unchecked") for r in rs)
+    adj = c[good] + c[bad]
+    return {"population": meta["strata"].get(stratum, {}).get("population", 0), "sampled": len(rs),
+            good: c[good], bad: c[bad], "cant_tell": c["cant_tell"], "unchecked": c["unchecked"],
+            "stale": c["stale"], "adjudicated": adj, "precision": round(c[good] / adj, 4) if adj else None,
+            "wilson95": accuracy.wilson(c[good], adj), "what": what}
+
+
 def tally(rows: list[dict], meta: dict, stale_ids: set) -> dict:
     by = {}
     for r in rows:
@@ -106,6 +116,11 @@ def tally(rows: list[dict], meta: dict, stale_ids: set) -> dict:
     fr = by.get("flood", [])
     fc = Counter("stale" if f"flood:{r['row_id']}" in stale_ids else (r["flood_check"] or "unchecked") for r in fr)
     return {
+        "council_outcomes": _measure(by.get("council_outcome", []), "council_outcome", "outcome_check", "right",
+                                     "wrong", meta, stale_ids,
+                                     "outcome, deferral date and tally as read vs the Clerk's page"),
+        "council_links": _measure(by.get("council_link", []), "council_link", "same_application", "yes", "no",
+                                  meta, stale_ids, "Council item and Planning Commission item are the same application"),
         "links_by_tier": links,
         "links_pooled": pooled,
         "leads": {"population": meta["strata"].get("lead", {}).get("population", 0), "sampled": len(lr),
@@ -159,6 +174,8 @@ def main(argv=None) -> int:
                                         for t, v in results["links_by_tier"].items()},
                       "leads": {k: results["leads"][k] for k in ("population", "adjudicated",
                                                                   "share_permit_found_elsewhere", "cant_tell")},
+                      **{k: {x: results[k][x] for x in ("population", "adjudicated", "precision", "wilson95",
+                                                        "cant_tell")} for k in ("council_outcomes", "council_links")},
                       "stale_rows": len(stale)}, indent=1))
     if args.apply_links:
         apply_rows = [r for r in rows if accuracy.kind_of(r["stratum"]) == "link"

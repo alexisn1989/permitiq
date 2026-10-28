@@ -8,6 +8,16 @@ Three strata, each with an explicit judgment -- never a generic "correct":
                                               outside permits.db; required)
   flood         permits whose point and       flood_check: parcel_class_right |
                 parcel flood classes differ   point_class_right | both_defensible | cant_tell
+  council_outcome  Clerk land-use items with  outcome_check: right | wrong | cant_tell
+                a mapped outcome              (outcome, deferral date and tally as read
+                                              from the Clerk's page)
+  council_link  non-ambiguous Clerk item ->   same_application: yes | no | cant_tell
+                PC item links (they set the
+                Council stage)
+
+The two council strata are measurements only: no judgment is ever applied
+back as a review. Their sheet rows carry no names or subject text; the
+checker opens the Clerk's page and the agenda from the links.
 
 A sample is frozen to a data snapshot: each row carries a fingerprint of the
 facts it shows, and the sheet a hash over all fact columns. The tally refuses
@@ -31,14 +41,20 @@ JUDGMENTS = {
     "link": ("same_project", ("yes", "no", "cant_tell")),
     "lead": ("lead_check", ("permit_found_elsewhere", "no_permit_found", "not_an_approval", "cant_tell")),
     "flood": ("flood_check", ("parcel_class_right", "point_class_right", "both_defensible", "cant_tell")),
+    "council_outcome": ("outcome_check", ("right", "wrong", "cant_tell")),
+    "council_link": ("same_application", ("yes", "no", "cant_tell")),
 }
 FACT_COLUMNS = ("stratum", "row_id", "fp", "decision_key", "meeting_id", "meeting_date", "decision_title",
                 "verified_outcome", "review_evidence", "permit_id", "source_permit_id", "permit_address",
                 "applied_date", "issued_date", "permit_type", "permit_description", "match_tier", "matched_on",
                 "decision_parcels", "permit_parcel", "coverage_from", "coverage_to", "lat", "lng", "point_class",
                 "parcel_gpin", "parcel_address", "zoning", "parcel_class", "share_sfha_v", "share_sfha_a",
-                "share_shaded_x", "share_other_mapped", "share_unmapped")
-JUDGMENT_COLUMNS = ("same_project", "lead_check", "search_done", "flood_check", "checker", "note")
+                "share_shaded_x", "share_other_mapped", "share_unmapped",
+                "clerk_item_key", "council_date", "clerk_label", "clerk_page", "clerk_link", "motion_raw",
+                "outcome", "deferred_to", "tally", "request_types", "clerk_addresses", "pc_item_key",
+                "hearing_date", "pc_request", "pc_addresses", "agenda_url")
+JUDGMENT_COLUMNS = ("same_project", "lead_check", "search_done", "flood_check", "outcome_check", "same_application",
+                    "checker", "note")
 COLUMNS = FACT_COLUMNS + JUDGMENT_COLUMNS
 
 
@@ -71,6 +87,7 @@ def populations(conn) -> dict[str, dict[str, dict]]:
     cov_from, cov_to = (cov["backfill_from"], cov["last_refresh_at"]) if cov else (None, None)
     out: dict[str, dict] = {f"link_{t}": {} for t in TIERS}
     out["lead"], out["flood"] = {}, {}
+    out.update(council_populations(conn))
     for r in conn.execute(
             """SELECT k.decision_key, k.permit_id, k.match_tier, k.matched_on, k.link_state, d.facts_fingerprint,
                       d.meeting_id, d.meeting_date, d.title, rv.verified_outcome, rv.evidence, p.source_permit_id,
@@ -126,6 +143,40 @@ def populations(conn) -> dict[str, dict[str, dict]]:
         facts["fp"] = fingerprint("flood", r["id"], r["lat"], r["lng"], r["point_class"], r["flood_load"],
                                   r["display_gpin"], r["parcel_class"], r["parcel_load"])
         out["flood"][str(r["id"])] = facts
+    return out
+
+
+def _clerk_facts(r) -> dict:
+    from ingest import edocs  # local import: keeps this module free of the archive client
+    return {"clerk_item_key": r["item_key"], "council_date": r["meeting_date"], "clerk_label": r["item_label"],
+            "clerk_page": r["page"], "clerk_link": edocs.doc_url(r["entry_id"]), "motion_raw": r["motion_raw"],
+            "outcome": r["outcome"], "deferred_to": r["deferred_to"],
+            "tally": "" if r["aye"] is None else f"{r['aye']}-{r['nay']}",
+            "request_types": " ".join(json.loads(r["request_types_json"])), "clerk_addresses": r["addresses"]}
+
+
+def council_populations(conn) -> dict[str, dict[str, dict]]:
+    """The two council strata (Clerk's Summary of Council Actions). Public facts only."""
+    items = "(SELECT group_concat(raw_text, ' | ') FROM clerk_item_addresses a WHERE a.item_key = c.item_key)"
+    out: dict[str, dict] = {"council_outcome": {}, "council_link": {}}
+    for r in conn.execute(f"SELECT c.*, {items} AS addresses FROM clerk_items c WHERE c.is_land_use = 1 "
+                          "AND c.outcome != 'unmapped' ORDER BY c.item_key"):
+        facts = _clerk_facts(r)
+        facts["fp"] = fingerprint("council_outcome", r["item_key"], r["outcome"], r["deferred_to"], r["aye"],
+                                  r["nay"], r["motion_raw"], r["entry_id"], r["page"])
+        out["council_outcome"][r["item_key"]] = facts
+    for r in conn.execute(
+            f"""SELECT c.*, {items} AS addresses, l.pc_item_key, l.matched_on, i.meeting_date AS hearing_date,
+                       i.request AS pc_request, i.addresses AS pc_addresses, d.url AS agenda_url
+                FROM clerk_pc_links l JOIN clerk_items c ON c.item_key = l.clerk_item_key
+                JOIN pc_items i ON i.item_key = l.pc_item_key JOIN pc_documents d ON d.doc_id = i.doc_id
+                WHERE l.ambiguous = 0 ORDER BY l.clerk_item_key, l.pc_item_key"""):
+        facts = _clerk_facts(r)
+        facts.update({"pc_item_key": r["pc_item_key"], "hearing_date": r["hearing_date"], "pc_request": r["pc_request"],
+                      "pc_addresses": r["pc_addresses"], "agenda_url": r["agenda_url"], "matched_on": r["matched_on"]})
+        facts["fp"] = fingerprint("council_link", r["item_key"], r["pc_item_key"], r["matched_on"], r["addresses"],
+                                  r["pc_addresses"], r["pc_request"], r["request_types_json"])
+        out["council_link"][f"{r['item_key']}|{r['pc_item_key']}"] = facts
     return out
 
 

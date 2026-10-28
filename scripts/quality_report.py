@@ -158,6 +158,17 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"Flood disagreements (N={r['flood_disagreements']['population']}): "
                   f"{ {k: v for k, v in r['flood_disagreements'].items() if k not in ('population', 'note')} } — "
                   f"{r['flood_disagreements']['note']}."]
+        council = [(name, r.get(key)) for name, key in (("Council outcome read correctly", "council_outcomes"),
+                                                         ("Council item ↔ hearing item", "council_links"))]
+        if any(v for _, v in council):
+            lines += ["", "| check | population N | checked | precision | 95% interval | can't tell | stale |",
+                      "|---|---:|---:|---:|---|---:|---:|"]
+            for name, v in council:
+                if v:
+                    ci = f"{_pct(v['wilson95'][0])}–{_pct(v['wilson95'][1])}" if v["wilson95"] else "–"
+                    lines.append(f"| {name} | {v['population']} | {v['adjudicated']} | {_pct(v['precision'])} | "
+                                 f"{ci} | **{v['cant_tell']}** | {v['stale']} |")
+            lines += ["", "Checked against the Clerk's page and the Planning Commission agenda linked on each row."]
     return "\n".join(lines) + "\n"
 
 

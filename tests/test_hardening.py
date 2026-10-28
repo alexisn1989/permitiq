@@ -659,7 +659,11 @@ def _q(**over):
          "accuracy": {"freshness": "fresh", "results": {
              "links_by_tier": {"gpin_exact": dict(tier), "address": {"population": 4, "adjudicated": 4}},
              "leads": {"population": 10, "adjudicated": 10, "cant_tell": 1},
-             "flood_disagreements": {"population": 3, "sampled": 3, "unchecked": 0, "stale": 0}}}}
+             "flood_disagreements": {"population": 3, "sampled": 3, "unchecked": 0, "stale": 0},
+             "council_outcomes": {"population": 40, "adjudicated": 30, "precision": 0.97, "wilson95": [0.8, 1.0],
+                                  "cant_tell": 1},
+             "council_links": {"population": 12, "adjudicated": 12, "precision": 1.0, "wilson95": [0.7, 1.0],
+                               "cant_tell": 0}}}}
     q.update(over)
     return q
 

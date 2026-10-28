@@ -319,7 +319,7 @@ def test_quality_section_and_checklist(linked):
         q = quality.quality(conn)
     cq = q["council_actions"]
     assert cq["land_use_items"] == 8 and cq["pc_items_with_council_stage"] >= 1
-    line = next(x for x in quality.acceptance_checklist(q, None) if x["item"].startswith("Council outcomes"))
+    line = next(x for x in quality.acceptance_checklist(q, None) if x["item"] == "Council outcomes (Clerk) coverage verified")
     assert line["passed"] is False  # no archive check recorded in this fixture: never a pass
 
 
@@ -360,3 +360,58 @@ def test_council_html_escapes_and_links_the_clerk_page():
     assert "Approved by City Council, with conditions" in out and "10–1" in out
     assert "Possible match only: different unit" in out and "individuals not shown" in out
     assert 'href="https://edocs.vbgov.com/WebLink/DocView.aspx?id=1&amp;dbid=0&amp;repo=CityClerk"' in out
+
+
+# ---------- people-checked samples of the Council chain ----------
+
+def test_council_strata_sample_and_tally(linked, tmp_path):
+    from ingest import accuracy, quality
+    env_, _ = linked
+    with db_module.db_readonly(env_["db"]) as conn:
+        pops = accuracy.council_populations(conn)
+    assert len(pops["council_outcome"]) == 8  # every mapped land-use item
+    assert set(pops["council_link"]) == {"vbcc:2025-03-18:J.5.|vbpc:2025-02-12:3", "vbcc:2025-04-15:K.1.|vbpc:2025-02-12:3",
+                                         "vbcc:2025-03-18:K.2.|vbpc:2025-02-12:1"}  # ambiguous links excluded
+    out = tmp_path / "s"
+    assert _script("accuracy_sample").main(["--seed", "7", "--out", str(out), "--synthetic"]) == 0
+    sheet = out / "accuracy_sample.csv"
+    text = sheet.read_text()
+    assert "JANE Q SAMPLE" not in text and "applicant" not in text.splitlines()[0]
+    assert "raw_block" not in text and "subject" not in text.splitlines()[0]
+    rows = list(csv.DictReader(sheet.open()))
+    council = [r for r in rows if r["stratum"].startswith("council_")]
+    assert {r["stratum"] for r in council} == {"council_outcome", "council_link"}
+    assert all(r["clerk_link"].startswith(edocs.BASE) for r in council)
+    for r in rows:
+        if r["stratum"] == "council_outcome":
+            r["outcome_check"] = "wrong" if r["row_id"] == "vbcc:2025-03-18:K.6." else "right"
+            r["checker"] = "T1"
+        elif r["stratum"] == "council_link":
+            r["same_application"], r["checker"] = "yes", "T1"
+
+    def write(rs, path):
+        with path.open("w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=accuracy.COLUMNS)
+            w.writeheader()
+            w.writerows(rs)
+
+    write(rows, sheet)
+    tally_s = _script("accuracy_tally")
+    bad = [dict(r) for r in rows]
+    next(r for r in bad if r["stratum"] == "council_link")["outcome_check"] = "right"  # wrong column for the stratum
+    write(bad, tmp_path / "bad.csv")
+    assert tally_s.main([str(tmp_path / "bad.csv"), "--meta", str(out / "accuracy_sample.meta.json")]) == 1
+    assert tally_s.main([str(sheet)]) == 0
+    res = json.loads((out / "accuracy_tally.json").read_text())["results"]
+    assert res["council_outcomes"]["adjudicated"] == 8 and res["council_outcomes"]["precision"] == 0.875
+    assert res["council_links"]["precision"] == 1.0 and res["council_links"]["population"] == 3
+    with db_module.db_readonly(env_["db"]) as conn:
+        q = quality.quality(conn)
+    lines = {x["item"]: x for x in quality.acceptance_checklist(q, None)}
+    assert lines["Council outcomes checked against the Clerk's page"]["passed"] is True
+    assert lines["Council-to-hearing links checked"]["passed"] is True
+    # a re-parse of a summary changes the facts: the tally reads stale and its figures are withheld
+    with db_module.db(env_["db"]) as conn:
+        CA.store_document(conn, _entry(102, "04152025", APRIL), 9, 2025, [APRIL[0].replace("10-1", "9-2")])
+    with db_module.db_readonly(env_["db"]) as conn:
+        assert quality.accuracy_block(conn)["freshness"] == "stale"
