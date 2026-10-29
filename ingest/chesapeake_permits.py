@@ -49,6 +49,8 @@ STATUS_BUCKET_MAP = {
     "Awaiting Contractor Selection": "active_pending", "Ready to Issue": "active_pending",
     "Provisional Approval": "active_pending",
     "Model Approved": "other", "In Service": "other", "Temp CO": "other", "Closed - Incomplete": "other",
+    # seen only on Elevator Asset records (inspection-certificate cycle, not construction)
+    "Ready for Renewal": "other", "Referred to Code Official": "other", "Second Notice Sent": "other",
 }
 
 
