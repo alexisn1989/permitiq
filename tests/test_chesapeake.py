@@ -175,8 +175,11 @@ def test_city_layers_share_national_behaviour_and_keys():
     assert C.LAYERS["ches_usda_soils"].source == "sda" and C.LAYERS["ches_usda_soils"].url == "VA550"
     assert C._base("ches_nrhp_polygons") == "nrhp_polygons" and C._base("rpa") == "rpa"
     assert all(l.locality == "chesapeake" for k, l in C.LAYERS.items() if k.startswith("ches_"))
-    assert all(l.locality == "virginia_beach" for k, l in C.LAYERS.items() if not k.startswith("ches_"))
-    assert C.ENVELOPES["chesapeake"] != C.ENVELOPES["virginia_beach"]
+    assert all(l.locality == "norfolk" for k, l in C.LAYERS.items() if k.startswith("nf_"))
+    assert all(l.locality == "virginia_beach" for k, l in C.LAYERS.items() if not k.startswith(("ches_", "nf_")))
+    assert C.ENVELOPES["chesapeake"] != C.ENVELOPES["virginia_beach"] != C.ENVELOPES["norfolk"]
+    assert C._base("nf_usda_soils") == "usda_soils" and C.LAYERS["nf_usda_soils"].url == "VA715"
+    assert "State = 'VIRGINIA'" in C.LAYERS["nf_nrhp_points"].where  # not Norfolk County, Massachusetts
 
 
 def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):

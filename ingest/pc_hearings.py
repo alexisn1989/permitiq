@@ -151,9 +151,11 @@ def public_item(row: dict) -> dict:
 
 
 def item_parcels(conn, gpins: list[str]) -> list[dict]:
-    """Parcels of the active load for an item's GPINs (read-only). A 14-digit
-    GPIN matches exactly; a 10-digit one matches its GPIN10, and is marked
-    ambiguous when that is shared by several parcels (condominium units)."""
+    """Parcels of the active Virginia Beach load for an item's GPINs (read-only).
+    A 14-digit GPIN matches exactly; a 10-digit one matches its GPIN10, and is
+    marked ambiguous when that is shared by several parcels (condominium units).
+    Hearing, filing and Council items are Virginia Beach's: another city's
+    10-digit parcel ids (Norfolk) must never answer a VB GPIN10."""
     out = []
     for g in gpins:
         exact = len(g) == 14
@@ -161,7 +163,7 @@ def item_parcels(conn, gpins: list[str]) -> list[dict]:
             "SELECT p.gpin, p.zoning, p.land_use, p.prop_address, ROUND(p.tax_area_sqft / 43560.0, 4) AS acreage, "
             "(p.minx + p.maxx) / 2 AS lng, (p.miny + p.maxy) / 2 AS lat, pf.parcel_flood_class, pf.share_sfha_v, "
             "pf.share_sfha_a, pf.share_shaded_x FROM parcels p JOIN parcel_loads l ON l.load_id = p.load_id "
-            "AND l.is_active = 1 LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin "
+            "AND l.is_active = 1 AND l.locality = 'virginia_beach' LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin "
             f"WHERE {'p.gpin_digits = ?' if exact else 'p.gpin10 = ?'} ORDER BY p.gpin LIMIT 25",
             (g if exact else g[:10],)).fetchall()
         for r in rows:

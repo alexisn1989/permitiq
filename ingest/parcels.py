@@ -61,10 +61,15 @@ PARCEL_FIELD_MAPS = {
     "chesapeake": {"gpin": "MAP_PARCEL", "zoning": None, "land_use": None, "prop_class": "PROPCLASS",
                    "tax_area_sqft": None, "prop_address": "ADDRESS", "fema_zone_bldg": None,
                    "acreage": "CALCACREAGE"},
+    # Norfolk (OpenData/Parcels/MapServer/1, profiled 2026-10-29): GPIN (10 digits) and shape only; the area is
+    # the layer's own SHAPE.STArea() in square feet (EPSG 2284, US feet) -- GIS-measured, not a tax-roll area
+    "norfolk": {"gpin": "GPIN", "zoning": None, "land_use": None, "prop_class": None,
+                "tax_area_sqft": "SHAPE.STArea()", "prop_address": None, "fema_zone_bldg": None},
 }
 PARCEL_SOURCES = {
     "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
+    "norfolk": "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData/Parcels/MapServer/1",
 }
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
 HAZARD_CLASSES = ("sfha_v", "sfha_a", "shaded_x")

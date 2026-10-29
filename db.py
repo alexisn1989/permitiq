@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1972,6 +1972,9 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 16:
             for statement in _SCHEMA_V16_STATEMENTS:
                 conn.execute(statement)
+        if current_version < 17:
+            # Norfolk's NFHL id, confirmed with a point query on the FEMA service (2026-10-29)
+            conn.execute("INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('norfolk', '510104')")
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
                      "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")

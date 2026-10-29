@@ -51,11 +51,13 @@ _PERMIT_UPSERT = """INSERT INTO permit_parcel (permit_id, load_id, method, gpin,
                match_fp = excluded.match_fp, matched_at = excluded.matched_at"""
 
 
-def match_permits(conn, index, load_id, everything, ts) -> Counter:
+def match_permits(conn, index, load_id, everything, ts, locality: str = "virginia_beach") -> Counter:
+    """Permits carrying a printed parcel id (raw GPIN): Virginia Beach, and Norfolk, whose adapter
+    mirrors its gpin into raw["GPIN"]."""
     todo = conn.execute(
         "SELECT p.id, p.lat, p.lng, json_extract(p.raw_json, '$.GPIN') AS gpin_raw FROM permits p "
-        "JOIN permit_parcel_effective e ON e.permit_id = p.id WHERE p.locality = 'virginia_beach' "
-        "AND (e.fresh = 0 OR ?)", (int(everything),)).fetchall()
+        "JOIN permit_parcel_effective e ON e.permit_id = p.id WHERE p.locality = ? "
+        "AND (e.fresh = 0 OR ?)", (locality, int(everything))).fetchall()
     out: Counter = Counter()
     rows = []
     for r in todo:
@@ -205,7 +207,7 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--reports-dir", type=Path, default=BASE / "reports")
-    p.add_argument("--locality", default="virginia_beach", choices=("virginia_beach", "chesapeake"))
+    p.add_argument("--locality", default="virginia_beach", choices=("virginia_beach", "chesapeake", "norfolk"))
     args = p.parse_args(argv)
     ts = db_module.now_iso()
     if args.locality != "virginia_beach":
@@ -239,8 +241,9 @@ def main(argv=None) -> int:
 
 
 def _main_city(args, ts) -> int:
-    """A city without parcel numbers on its permits: its own parcel load, its own
-    permits, its own review file. Virginia Beach rows are never read or written."""
+    """Another city: its own parcel load, its own permits, its own review file. Norfolk's
+    permits carry a GPIN; Chesapeake's do not (address, then point). Virginia Beach
+    rows are never read or written."""
     try:
         with db_module.db() as conn:
             load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?",
@@ -251,7 +254,10 @@ def _main_city(args, ts) -> int:
                 return 1
             index = load_index(conn, load["load_id"])
             print(f"{args.locality} parcel load {load['load_id']}: {len(index.rows)} parcels")
-            pm = match_city_permits(conn, index, load["load_id"], args.locality, args.all, ts)
+            if args.locality == "norfolk":  # Norfolk permits carry the parcel GPIN: the GPIN path, point as a check
+                pm = match_permits(conn, index, load["load_id"], args.all, ts, args.locality)
+            else:
+                pm = match_city_permits(conn, index, load["load_id"], args.locality, args.all, ts)
             print(f"permits:   {dict(sorted(pm.items()))}")
             untagged = conn.execute("SELECT COUNT(*) FROM permit_parcel_effective e JOIN permits p ON p.id = e.permit_id "
                                     "WHERE p.locality = ? AND e.fresh = 0", (args.locality,)).fetchone()[0]

@@ -149,7 +149,10 @@ LAYERS = {l.key: l for l in (
           fmt="UPC {UPC} {DESCRIPTION} ({SCOPE_OF_WORK_DESC}; construction start {CN_START_DATE})"),
 )}
 
-ENVELOPES = {"virginia_beach": VB_ENVELOPE, "chesapeake": CHES_ENVELOPE}
+# Norfolk: the city's parcel-layer extent (2026-10-29) with a small margin
+NF_ENVELOPE = {"geometry": '{"xmin":-76.35,"ymin":36.81,"xmax":-76.16,"ymax":36.98,"spatialReference":{"wkid":4326}}',
+               "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
+ENVELOPES = {"virginia_beach": VB_ENVELOPE, "chesapeake": CHES_ENVELOPE, "norfolk": NF_ENVELOPE}
 
 # Chesapeake (city GIS profiled 2026-10-28; layers measured only on Chesapeake parcels). Its RPA buffer is
 # drawn as polygons (100 / 50 ft from the city's perennial-water layer), so RPA acres are measured here.
@@ -227,8 +230,63 @@ CHESAPEAKE_LAYERS = (
           where="JURISDICTION_DESC LIKE '%Chesapeake%'", fmt=LAYERS["vdot_syip_points"].fmt, locality="chesapeake"),
 )
 LAYERS.update({l.key: l for l in CHESAPEAKE_LAYERS})
+
+# Norfolk (gisshare.norfolk.gov OpenData, profiled 2026-10-29; measured only on Norfolk parcels). Its CBPA layer
+# is polygons with DESIGNATION RPA / IDA, so RPA acres are measured. No sewer / water layer is published.
+NF = "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData"
+_NP, _NZ, _NE = f"{NF}/Planning/MapServer", f"{NF}/Planning_and_Zoning_Group_OpenData/MapServer", f"{NF}/Environmental/MapServer"
+NORFOLK_LAYERS = (
+    Layer("nf_cbpa", f"{_NP}/0", "polygon_share", "Chesapeake Bay Preservation Area (Norfolk)",
+          "RPA: Resource Protection Area (clearing, grading and building need an exception). IDA: Intensely "
+          "Developed Area (redevelopment rules apply).", ("DESIGNATION",), "DESIGNATION", locality="norfolk"),
+    Layer("nf_zoning", f"{_NP}/1", "polygon_share", "Zoning (city layer)", "Zoning district(s) of the parcel.",
+          ("ZONE", "TYPE"), "ZONE", classification=True, locality="norfolk"),
+    Layer("nf_conditional_zoning", f"{_NP}/3", "polygon_share", "Conditional zoning (by ordinance)",
+          "Land rezoned with conditions: the ordinance's conditions bind development.", ("ITEMNO", "ORDINANCE"),
+          "ORDINANCE", locality="norfolk"),
+    Layer("nf_zoning_overlays", f"{_NP}/6", "polygon_share", "Zoning overlay",
+          "Overlay districts (airfield noise and accident potential, neighbourhood and design overlays, landmarks): "
+          "extra standards apply.", ("NAME",), "NAME", locality="norfolk"),
+    Layer("nf_aicuz_apz", f"{_NZ}/30", "polygon_share", "Navy airfield Accident Potential Zone (AICUZ)",
+          "Accident potential zone: land-use and density limits.", ("ZONES",), "ZONES", locality="norfolk"),
+    Layer("nf_aicuz_noise", f"{_NZ}/31", "polygon_share", "Navy airfield noise zone (AICUZ)",
+          "Day-night average noise level contour: noise attenuation and use limits.", ("NOISE_LEV_",), "NOISE_LEV_",
+          locality="norfolk"),
+    Layer("nf_wave_action", f"{_NZ}/35", "line_crossing", "Limit of Moderate Wave Action",
+          "FEMA's limit of moderate wave action (1.5 ft waves): coastal construction standards seaward of it.",
+          near_ft=300, locality="norfolk"),
+    Layer("nf_wetlands", f"{_NE}/1", "polygon_share", "Wetlands (city layer)",
+          "Mapped wetland (NWI-style code), not a delineation.", ("ATTRIBUTE",), "ATTRIBUTE", locality="norfolk"),
+    # federal and state layers, Norfolk's extent / survey area
+    Layer("nf_usda_soils", "VA715", "polygon_share", "Soils (USDA soil survey)",
+          LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",
+          locality="norfolk"),
+    Layer("nf_nwi_wetlands", LAYERS["nwi_wetlands"].url, "polygon_share", LAYERS["nwi_wetlands"].label,
+          LAYERS["nwi_wetlands"].meaning, LAYERS["nwi_wetlands"].attrs, "WETLAND_TYPE", bbox=True,
+          where=LAYERS["nwi_wetlands"].where, locality="norfolk"),
+    # County = 'Norfolk' alone also matches Norfolk County, Massachusetts
+    Layer("nf_nrhp_polygons", LAYERS["nrhp_polygons"].url, "polygon_share", LAYERS["nrhp_polygons"].label,
+          LAYERS["nrhp_polygons"].meaning, LAYERS["nrhp_polygons"].attrs, "RESNAME",
+          where="County = 'Norfolk' AND State = 'VIRGINIA'", locality="norfolk"),
+    Layer("nf_nrhp_points", LAYERS["nrhp_points"].url, "point_near", LAYERS["nrhp_points"].label,
+          LAYERS["nrhp_points"].meaning, LAYERS["nrhp_points"].attrs, near_ft=500,
+          where="County = 'Norfolk' AND State = 'VIRGINIA'", fmt=LAYERS["nrhp_points"].fmt, locality="norfolk"),
+    # 'City of Norfolk' exactly: "Norfolk Maintenance Area" is VDOT's maintenance region, not the city
+    Layer("nf_vdot_adt", LAYERS["vdot_adt"].url, "line_crossing", LAYERS["vdot_adt"].label,
+          LAYERS["vdot_adt"].meaning, LAYERS["vdot_adt"].attrs, near_ft=300,
+          where="FROM_JURISDICTION = 'City of Norfolk' OR TO_JURISDICTION = 'City of Norfolk'",
+          fmt=LAYERS["vdot_adt"].fmt, locality="norfolk"),
+    Layer("nf_vdot_syip_lines", LAYERS["vdot_syip_lines"].url, "line_crossing", LAYERS["vdot_syip_lines"].label,
+          LAYERS["vdot_syip_lines"].meaning, LAYERS["vdot_syip_lines"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Norfolk'", fmt=LAYERS["vdot_syip_lines"].fmt, locality="norfolk"),
+    Layer("nf_vdot_syip_points", LAYERS["vdot_syip_points"].url, "point_near", LAYERS["vdot_syip_points"].label,
+          LAYERS["vdot_syip_points"].meaning, LAYERS["vdot_syip_points"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Norfolk'", fmt=LAYERS["vdot_syip_points"].fmt, locality="norfolk"),
+)
+LAYERS.update({l.key: l for l in NORFOLK_LAYERS})
 # the same national layer under another city's key: soil summary, NRHP boxes and wording behave the same
-BASE_KEY = {l.key: l.key.removeprefix("ches_") for l in CHESAPEAKE_LAYERS}
+BASE_KEY = {**{l.key: l.key.removeprefix("ches_") for l in CHESAPEAKE_LAYERS},
+            **{l.key: l.key.removeprefix("nf_") for l in NORFOLK_LAYERS}}
 
 BOARD_LAYERS = {
     "cbpa": (f"{PLAN}/3", "Chesapeake Bay Preservation Area Board actions"),
@@ -500,9 +558,9 @@ def public_constraints(conn, gpins: list[str]) -> dict:
         boards = {}  # the board histories are Virginia Beach's
         boards_note = "Board histories are loaded for Virginia Beach only."
     not_covered = []
-    if "virginia_beach" in cities:
+    if cities & {"virginia_beach", "norfolk"}:  # neither city publishes its sewer / water lines
         not_covered.append("sewer / water capacity and pipe locations (not published)")
-    if cities - {"virginia_beach"}:
+    if "chesapeake" in cities:
         not_covered.append("sewer / water capacity (not published; mains and service areas are shown as published)")
     not_covered.append("Virginia Landmarks Register (state DHR service unreachable)")
     return {

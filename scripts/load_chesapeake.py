@@ -57,6 +57,23 @@ def _link(row: dict, index, ids: set, stats) -> list[str]:
     return found
 
 
+def insert_cases(conn, load_id: int, locality: str, rows: list[dict]) -> None:
+    """land_use_cases rows for one city record load (shared with load_norfolk.py)."""
+    conn.executemany(
+        "INSERT INTO land_use_cases (load_id, locality, case_id, object_ids_json, case_type, project, address, "
+        "parcel_ids_json, housing_units, residential, zoning_from, zoning_to, applied_date, year_applied, "
+        "staff_rec, pc_action, pc_date, cc_action, cc_date, arc_action, arc_date, final_raw, stage, final_date, "
+        "planner, notes, legacy, source_link, geom_geojson, minx, miny, maxx, maxy, lat, lng, gpins_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(load_id, locality, r["case_id"], json.dumps(r["object_ids"]), r["case_type"], r["project"],
+          r["address"], json.dumps(r["parcel_ids"]), r["housing_units"], r["residential"], r["zoning_from"],
+          r["zoning_to"], r["applied_date"], r["year_applied"], r["staff_rec"], r["pc_action"], r["pc_date"],
+          r["cc_action"], r["cc_date"], r["arc_action"], r["arc_date"], r["final_raw"], r["stage"],
+          r["final_date"], r["planner"], r["notes"], r["legacy"], r["source_link"], CH.geojson(r["geom"]),
+          *(r["geom"].bounds if r["geom"] is not None else (None,) * 4), r["lat"], r["lng"],
+          json.dumps(r["gpins"])) for r in rows])
+
+
 def load_source(conn, source: str, dry_run: bool) -> str:
     url = CH.SOURCES[source]
     meta = fetch_json(url, {"f": "json"})
@@ -93,19 +110,7 @@ def load_source(conn, source: str, dry_run: bool) -> str:
                                                             for f in raw}),
          len(rows), h, json.dumps(domain), plid, db_module.now_iso())).lastrowid
     if source == "ches_cases":
-        conn.executemany(
-            "INSERT INTO land_use_cases (load_id, locality, case_id, object_ids_json, case_type, project, address, "
-            "parcel_ids_json, housing_units, residential, zoning_from, zoning_to, applied_date, year_applied, "
-            "staff_rec, pc_action, pc_date, cc_action, cc_date, arc_action, arc_date, final_raw, stage, final_date, "
-            "planner, notes, legacy, source_link, geom_geojson, minx, miny, maxx, maxy, lat, lng, gpins_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(load_id, CH.LOCALITY, r["case_id"], json.dumps(r["object_ids"]), r["case_type"], r["project"],
-              r["address"], json.dumps(r["parcel_ids"]), r["housing_units"], r["residential"], r["zoning_from"],
-              r["zoning_to"], r["applied_date"], r["year_applied"], r["staff_rec"], r["pc_action"], r["pc_date"],
-              r["cc_action"], r["cc_date"], r["arc_action"], r["arc_date"], r["final_raw"], r["stage"],
-              r["final_date"], r["planner"], r["notes"], r["legacy"], r["source_link"], CH.geojson(r["geom"]),
-              *(r["geom"].bounds if r["geom"] is not None else (None,) * 4), r["lat"], r["lng"],
-              json.dumps(r["gpins"])) for r in rows])
+        insert_cases(conn, load_id, CH.LOCALITY, rows)
     else:
         conn.executemany(
             "INSERT INTO development_records (load_id, locality, source, record_id, object_ids_json, record_type, "

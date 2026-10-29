@@ -947,6 +947,11 @@ CASE_NOTICE = ("Stages and actions are the city's own published record (Developm
                "labelled from the layer's own coded domain. Permits on the same parcels are candidates from Accela "
                "search results downloaded for the dates shown, not confirmed links to this case. The city's "
                "free-text notes are not shown (they can name private individuals).")
+NORFOLK_CASE_NOTICE = ("Approved land-use items from Norfolk's GIS: Conditional Use Permits and Conditional Zoning, "
+                       "each granted by a City Council ordinance. Norfolk publishes no pending cases, so only approvals "
+                       "appear. Permits on the same parcels are candidates, not confirmed links. Applicant names and "
+                       "the city's notes are not shown.")
+CASE_NOTICES = {"chesapeake": CASE_NOTICE, "norfolk": NORFOLK_CASE_NOTICE}
 RECORD_NOTICE = ("Development plans and right-of-way permits as the city publishes them. They are not building permits "
                  "and are not counted as permits. Names of private individuals are not shown.")
 
@@ -977,9 +982,9 @@ def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
 def cases_route(
     stage: Optional[list[str]] = Query(None), case_type: Optional[list[str]] = Query(None),
     applied_from: Optional[str] = None, applied_to: Optional[str] = None, include_legacy: bool = False,
-    limit: int = Query(500, ge=1, le=5000),
+    locality: Optional[str] = None, limit: int = Query(500, ge=1, le=5000),
 ):
-    """A pipeline city's land-use cases (Chesapeake Development Tracking)."""
+    """A city's land-use cases: Chesapeake Development Tracking, Norfolk's approved CUPs and conditional zoning."""
     _validate_date(applied_from, "applied_from")
     _validate_date(applied_to, "applied_to")
     stages = parse_tokens(stage, db_module.CASE_STAGES, "stage")
@@ -999,13 +1004,16 @@ def cases_route(
         args.append(applied_to)
     if not include_legacy:
         where.append("legacy = 0")
+    if locality:
+        where.append("locality = ?")
+        args.append(locality)
     sql = ("SELECT * FROM land_use_cases_effective" + (" WHERE " + " AND ".join(where) if where else "")
            + " ORDER BY applied_date IS NULL, applied_date DESC, case_id LIMIT ?")
     with _ro() as conn:
         domain = _case_domain(conn)
         items = [chesapeake_records.public_case(dict(r), domain) for r in conn.execute(sql, (*args, limit))]
         load = _record_load(conn, "ches_cases")
-    return {"cases": items, "count": len(items), "load": load, "notice": CASE_NOTICE}
+    return {"cases": items, "count": len(items), "load": load, "notice": CASE_NOTICES.get(locality or "", CASE_NOTICE)}
 
 
 @app.get("/api/land-use/cases/{case_id}")
@@ -1042,7 +1050,7 @@ def case_detail(case_id: str):
         out["geometry"] = json.loads(r["geom_geojson"]) if r["geom_geojson"] else None
         out["site_constraints"] = constraints_mod.public_constraints(conn, out["gpins"])
         out["data_as_of"] = quality.data_as_of(conn)
-    out["notice"] = CASE_NOTICE
+    out["notice"] = CASE_NOTICES.get(r["locality"], CASE_NOTICE)
     return out
 
 

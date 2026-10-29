@@ -276,3 +276,24 @@ def test_no_status_falls_into_other_bucket_from_real_backlog(monkeypatch):
     ]
     for status in real_backlog_statuses:
         assert norfolk._status_bucket(status) != "other", f"{status!r} still falls to 'other'"
+
+
+def test_paging_order_is_unique_and_parcel_fields_are_used(monkeypatch):
+    seen = []
+    rows = [{"permit_number": "BLD26-00001", "address": "100 EXAMPLE ST", "type": "Building", "status": "Voided",
+             "application_date": "2026-09-01T00:00:00.000", "gpin": "1234567890", "latitude": "36.88",
+             "longitude": "-76.25"},
+            {"permit_number": "BLD26-00002", "address": "200 EXAMPLE ST", "type": "Building", "status": "Issued",
+             "application_date": "2026-09-01T00:00:00.000", "gpin": "1234567891", "latitude": "40.0",
+             "longitude": "-76.25"}]
+
+    def fake_fetch(url, params=None, **kwargs):
+        seen.append(params)
+        return rows if params["$offset"] == 0 else []
+    monkeypatch.setattr(norfolk, "fetch_json_retry", fake_fetch)
+    out = list(norfolk.fetch())
+    assert ":id" in seen[0]["$order"]  # ties on application_date must not shift rows between pages
+    a, b = out
+    assert (a.lat, a.lng, a.coordinate_source, a.geocode_status) == (36.88, -76.25, "native", "native")
+    assert (b.lat, b.coordinate_source, b.geocode_status) == (None, None, "pending")  # outside Hampton Roads
+    assert a.raw["GPIN"] == "1234567890" and a.status_bucket == "expired_void"

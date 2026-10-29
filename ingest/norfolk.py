@@ -1,9 +1,12 @@
 """Norfolk building permits adapter.
 
 Confirmed live source: Socrata SODA API, dataset "Permits" (fahm-yuh4),
-updated daily. No native lat/lng -- the geocode pass fills coordinates in
-later. No confirmed cost field ('total_balance' is a fee balance, not a
-project valuation) so valuation is always None here.
+updated daily. Since 2026 the dataset carries each permit's parcel GPIN and
+the parcel's latitude / longitude (profiled 2026-10-29): those are used as
+native coordinates (the parcel's point, not the building's), and the GPIN is
+mirrored into raw["GPIN"] so parcel matching and its freshness check read it
+the same way as Virginia Beach's. project_cost is "an estimate" and
+total_balance a fee balance, so valuation stays None.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ STATUS_BUCKET_MAP = {
     "Revoked": "expired_void",
     "Expired": "expired_void",
     "Void": "expired_void",
+    "Voided": "expired_void",  # seen in 2026 data, same as Void
     "Under Review": "active_pending",
     "Pending": "active_pending",
     "Pending Payment": "active_pending",
@@ -73,6 +77,16 @@ def _status_bucket(raw_status: str | None) -> str:
     return STATUS_BUCKET_MAP.get(raw_status, "other")
 
 
+def _coords(raw: dict) -> tuple[float | None, float | None]:
+    """The parcel's coordinates as published, if they parse and fall inside Hampton Roads."""
+    from ingest.geocode import _in_bbox  # local import: geocode imports common, as this module does
+    try:
+        lat, lng = float(raw["latitude"]), float(raw["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    return (lat, lng) if _in_bbox(lat, lng) else (None, None)
+
+
 def _build_address(raw: dict) -> str | None:
     address = raw.get("address")
     if not address or not str(address).strip():
@@ -90,7 +104,9 @@ def fetch(since: date | None = None, limit: int | None = None):
     schema_checked = False
 
     while True:
-        params = {"$limit": PAGE_SIZE, "$offset": offset, "$order": "application_date"}
+        # :id breaks ties: many permits share an application_date, and offset paging over a
+        # non-unique order can repeat or skip rows between pages (645 of 128,051 were missed)
+        params = {"$limit": PAGE_SIZE, "$offset": offset, "$order": "application_date, :id"}
         if since is not None:
             since_str = since.isoformat() if isinstance(since, date) else str(since)
             params["$where"] = f"application_date >= '{since_str}T00:00:00.000'"
@@ -123,9 +139,13 @@ def fetch(since: date | None = None, limit: int | None = None):
                 # can't identify this record -- skip it rather than fail the whole page
                 continue
 
+            lat, lng = _coords(raw)
+            raw = {**raw, "GPIN": raw.get("gpin")}  # the parcel id, under the key parcel matching reads
             yield NormalizedPermit(
                 locality=LOCALITY,
                 source_permit_id=str(permit_id).strip(),
+                lat=lat, lng=lng, coordinate_source="native" if lat is not None else None,
+                geocode_status="native" if lat is not None else "pending",
                 source_name=SOURCE_NAME,
                 source_url=BASE_URL,
                 source_record_url=SOURCE_RECORD_URL,

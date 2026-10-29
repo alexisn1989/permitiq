@@ -101,6 +101,11 @@ def main(argv=None) -> int:
             if not n_permits and not (args.decisions and locality == "virginia_beach"):
                 print(f"{locality}: no permits to tag (none published or ingested); skipped")
                 continue
+            if load_id is None and locality != "virginia_beach":
+                # a city added later: its permits stay untagged until its flood map is loaded
+                print(f"{locality}: no active flood load for DFIRM {scope['dfirm_id']} yet; skipped "
+                      f"(run scripts/load_flood_zones.py --dfirm {scope['dfirm_id']})")
+                continue
             if load_id is None:
                 print(f"[FATAL] {locality}: no active flood load for DFIRM {scope['dfirm_id']}; "
                       "run scripts/load_flood_zones.py first", file=sys.stderr)
