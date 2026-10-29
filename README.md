@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **541 tests**, all passing, zero live network calls |
+| **Test suite** | **550 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -579,6 +579,31 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
     - Virginia Beach results hash-identical.
     - **Spot check (2026-10-29):** 5 permits (3 by address, 1 by point, 1 address / point disagreement) checked by hand against their Accela records: all 5 addresses and parcel numbers agreed. In the disagreement, Accela confirmed the address parcel; its Census point was 163 ft away, so the 200-ft rule had already linked it correctly. Five checks are a sanity check, not a measured accuracy rate (95% interval 57–100%).
 
+### Chesapeake City Council votes (VoteIQ export)
+
+```bash
+python scripts/load_council_votes.py --locality chesapeake --dir exports/   # the four VoteIQ CSVs
+```
+
+- **Source:** VoteIQ's scrape of the city's meeting videos (Granicus):
+  - 1,066 votes and 9,583 member votes;
+  - meetings 6/13/2023 – 7/14/2026, with 103 votes undated;
+  - the current council roster (no email stored);
+  - the upcoming agenda.
+- **Checked before anything is written:** exact column layouts, every member vote belongs to a vote, and each vote's member rows equal its own per-member list. An identical export writes nothing.
+- **Tallies** are counted from the members' votes. 41 printed tallies that differ are kept and flagged, never corrected.
+- **Motions** count as approve / deny / continue only for strings seen in the export; anything else is "other". A failed motion to deny decides nothing.
+- **Case numbers** in the modern form (PLN-…, DEV-…) are always taken; older short forms (UP-10-01) only when that exact case is in the city's record.
+- **The city's case record stays authoritative.** Votes are shown on the case page and cross-checked, never used to set a stage. On the real export:
+  - 138 cases agree;
+  - 9 votes are not yet in the city's record;
+  - 3 were continued, 4 had no deciding motion;
+  - 39 cases are not in Development Tracking;
+  - 2 disagree, listed in `council_case_review_chesapeake.csv` with the city's final stage. In both, the city's final action matches the vote and only its Council-action field differs.
+- **Member counts** (`/api/council/members`): yes / no / abstain / absent on votes that name a case. Counts only: no scores or rankings.
+- **Scheduled hearings:** agenda items dated today or later show "scheduled for City Council" on the case; past agenda dates are history only.
+- **Not imported:** VoteIQ's Virginia Beach donor / campaign-finance analysis.
+
 ---
 
 ## API
@@ -613,6 +638,8 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/constraints/{layer}.geojson?bbox=` | One constraint layer inside a map view (display only; 413 above 2,000 features) |
 | `GET /api/land-use/cases` | A pipeline city's land-use cases (Chesapeake); filters `stage`, `case_type`, `applied_from/to`, `include_legacy` |
 | `GET /api/land-use/cases/{case_id}` | One case: city actions, parcels, flood, site constraints, development records on the same parcels |
+| `GET /api/land-use/council-votes` | A city's Council votes (VoteIQ export) with counted tallies and member votes; filters `locality`, `result`, `has_case`, `date_from/to` |
+| `GET /api/council/members` | Per member: yes / no / abstain / absent counts on Council votes naming a land-use case |
 | `GET /api/development-records` | Development plans and right-of-way permits (not building permits); filters `source`, `status` |
 | `GET /api/land-use/council-actions` | Land-use items from the Clerk's Summary of Council Actions; filters `outcome`, `district`, `date_from/to`; archive coverage |
 | `GET /api/land-use/council-actions/{key}` | One Council action: outcome, tally, addresses, the PC items it decides (or possibly decides), the Clerk's page |
@@ -628,7 +655,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**541 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**550 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 

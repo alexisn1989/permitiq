@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1803,6 +1803,105 @@ def _schema_v15(conn) -> None:
         conn.execute(view[0])
 
 
+# Schema v16: a city's Council votes from a VoteIQ export (Chesapeake). The city's own
+# case record stays authoritative: votes are shown and cross-checked, never used to set
+# a case stage. Council members are public officials; no email is stored.
+COUNCIL_VOTE_RESULTS = ("passed", "failed", "tabled", "withdrawn")
+COUNCIL_MEMBER_VOTES = ("yes", "no", "abstain", "absent")
+MOTION_KINDS = ("approve", "deny", "continue", "other")
+_SCHEMA_V16_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS council_vote_loads (
+        load_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        locality       TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        files_json     TEXT NOT NULL,
+        votes          INTEGER NOT NULL,
+        member_votes   INTEGER NOT NULL,
+        members        INTEGER NOT NULL,
+        agenda_items   INTEGER NOT NULL,
+        undated_votes  INTEGER NOT NULL,
+        date_min       TEXT,
+        date_max       TEXT,
+        content_hash   TEXT NOT NULL,
+        loaded_at      TEXT NOT NULL,
+        is_active      INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1))
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_council_vote_loads_active ON council_vote_loads(locality) WHERE is_active = 1",
+    f"""
+    CREATE TABLE IF NOT EXISTS council_votes (
+        load_id        INTEGER NOT NULL REFERENCES council_vote_loads(load_id) ON DELETE CASCADE,
+        vote_id        TEXT NOT NULL,
+        clip_id        TEXT,
+        meeting_date   TEXT,
+        agenda_item    TEXT,
+        title          TEXT,
+        motion         TEXT,
+        motion_kind    TEXT NOT NULL CHECK (motion_kind IN ({",".join(repr(x) for x in MOTION_KINDS)})),
+        moved_by       TEXT,
+        seconded_by    TEXT,
+        result         TEXT NOT NULL CHECK (result IN ({",".join(repr(x) for x in COUNCIL_VOTE_RESULTS)})),
+        yes            INTEGER NOT NULL,
+        no             INTEGER NOT NULL,
+        abstain        INTEGER NOT NULL,
+        absent         INTEGER NOT NULL,
+        printed_tally  TEXT,
+        tally_mismatch INTEGER NOT NULL CHECK (tally_mismatch IN (0, 1)),
+        category       TEXT,
+        case_ids_json  TEXT NOT NULL,
+        PRIMARY KEY (load_id, vote_id)
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS council_member_votes (
+        load_id     INTEGER NOT NULL REFERENCES council_vote_loads(load_id) ON DELETE CASCADE,
+        vote_id     TEXT NOT NULL,
+        member      TEXT NOT NULL,
+        member_raw  TEXT NOT NULL,
+        vote        TEXT NOT NULL CHECK (vote IN ({",".join(repr(x) for x in COUNCIL_MEMBER_VOTES)})),
+        PRIMARY KEY (load_id, vote_id, member)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS council_members (
+        load_id   INTEGER NOT NULL REFERENCES council_vote_loads(load_id) ON DELETE CASCADE,
+        name      TEXT NOT NULL,
+        seat      TEXT,
+        PRIMARY KEY (load_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS council_agenda_items (
+        load_id        INTEGER NOT NULL REFERENCES council_vote_loads(load_id) ON DELETE CASCADE,
+        item_id        TEXT NOT NULL,
+        event_id       TEXT,
+        meeting_date   TEXT,
+        item_ref       TEXT,
+        section        TEXT,
+        title          TEXT,
+        category       TEXT,
+        agenda_url     TEXT,
+        case_ids_json  TEXT NOT NULL,
+        lat            REAL,
+        lng            REAL,
+        scraped_at     TEXT,
+        PRIMARY KEY (load_id, item_id)
+    )
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS council_votes_effective AS
+    SELECT l.locality, v.* FROM council_votes v
+    JOIN council_vote_loads l ON l.load_id = v.load_id AND l.is_active = 1
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS council_agenda_effective AS
+    SELECT l.locality, a.* FROM council_agenda_items a
+    JOIN council_vote_loads l ON l.load_id = a.load_id AND l.is_active = 1
+    """,
+]
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1870,6 +1969,9 @@ def init_db(db_path: Path | str | None = None) -> None:
                 conn.execute(statement)
         if current_version < 15:
             _schema_v15(conn)
+        if current_version < 16:
+            for statement in _SCHEMA_V16_STATEMENTS:
+                conn.execute(statement)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
                      "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")

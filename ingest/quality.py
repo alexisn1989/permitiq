@@ -378,12 +378,43 @@ def pipeline_city_quality(conn) -> dict | None:
     return out
 
 
+def council_vote_quality(conn) -> dict | None:
+    """Cities with a Council vote export (VoteIQ): coverage, tally mismatches, and how the
+    votes compare with the city's own case record; None if none is loaded."""
+    loads = [dict(r) for r in conn.execute(
+        "SELECT locality, source, votes, member_votes, agenda_items, undated_votes, date_min, date_max, loaded_at "
+        "FROM council_vote_loads WHERE is_active = 1 ORDER BY locality")]
+    if not loads:
+        return None
+    from ingest import council_votes  # local import, as in pc_quality
+    out = {}
+    for ld in loads:
+        city = ld["locality"]
+        votes: dict[str, list] = {}
+        for r in conn.execute("SELECT * FROM council_votes_effective WHERE locality = ?", (city,)):
+            for cid in json.loads(r["case_ids_json"]):
+                votes.setdefault(cid, []).append(dict(r))
+        cases = {r[0]: r[1] for r in conn.execute(
+            "SELECT case_id, cc_action FROM land_use_cases_effective WHERE locality = ?", (city,))}
+        checks: dict[str, int] = {}
+        for cid, vs in votes.items():
+            k = council_votes.case_check(vs, cases.get(cid), cid in cases)
+            checks[k] = checks.get(k, 0) + 1
+        out[city] = {"load": ld, "case_checks": dict(sorted(checks.items())),
+                     "tally_mismatches": conn.execute("SELECT COUNT(*) FROM council_votes_effective WHERE locality = ? "
+                                                      "AND tally_mismatch = 1", (city,)).fetchone()[0],
+                     "votes_naming_a_case": conn.execute("SELECT COUNT(*) FROM council_votes_effective WHERE locality = ? "
+                                                         "AND case_ids_json != '[]'", (city,)).fetchone()[0]}
+    return out
+
+
 def quality(conn) -> dict:
     return {"coverage": coverage(conn), "unresolved": unresolved(conn), "refresh_age": refresh_age(conn),
             "backfill": backfill(conn), "accuracy": accuracy_block(conn), "data_as_of": data_as_of(conn),
             "source_rows": source_row_counts(conn), "planning_commission": pc_quality(conn),
             "filings": filing_quality(conn), "council_actions": clerk_quality(conn),
-            "site_constraints": constraint_quality(conn), "pipeline_cities": pipeline_city_quality(conn)}
+            "site_constraints": constraint_quality(conn), "pipeline_cities": pipeline_city_quality(conn),
+            "council_votes": council_vote_quality(conn)}
 
 
 # ---------- run record / locality acceptance checklist ----------
@@ -500,6 +531,12 @@ def acceptance_checklist(q: dict, record: dict | None, min_n: int = 30) -> list[
             "; ".join(f"{x['source']} {x['received_count']} of {x['expected_count']} -> {x['records']}" for x in lds)
             + f"; cases with parcels {pq['cases_with_parcels']}, records with parcels {pq['records_with_parcels']}; "
               "no building permits published")
+    for city, cq in sorted((q.get("council_votes") or {}).items()):
+        ld, ch = cq["load"], cq["case_checks"]
+        add(f"{city} Council votes cross-checked", True,
+            f"{ld['votes']} votes {ld['date_min']}–{ld['date_max']} ({ld['undated_votes']} undated); cases agreeing "
+            f"with the city record {ch.get('agrees', 0)}, disagreeing {ch.get('disagrees', 0)} (listed for review), "
+            f"not in the city record yet {ch.get('city_not_recorded', 0)}")
     open_total = sum(v for v in u.values() if isinstance(v, int))
     add("Unresolved cases listed", True, f"{open_total} open across {len(u)} categories (see Unresolved cases)")
     if record is None:

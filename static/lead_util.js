@@ -283,6 +283,36 @@
   const CASE_STAGE_TEXT = { approved: "Approved (city record)", denied: "Denied", withdrawn: "Withdrawn",
     pending: "Pending", incomplete: "Incomplete", other: "Final action as printed" };
 
+  const COUNCIL_CHECK_TEXT = {
+    agrees: "The Council vote agrees with the city's case record.",
+    disagrees: "The Council vote does not match the city's case record: listed for review (the city's record stands).",
+    city_not_recorded: "The city's case record does not (yet) show this Council action.",
+    continued: "The Council continued (deferred) this case; no deciding vote in the export.",
+    no_decision: "No approve or deny vote on this case in the export.",
+    undated: "Council votes found, but the meeting date is not recorded.",
+  };
+
+  // c: case detail. The Council vote card: each vote with its counted tally and each member's vote.
+  function buildCouncilVotesHtml(c) {
+    const cov = c.council_votes_coverage;
+    if (!cov) return "";
+    const sched = (c.council_scheduled || []).map((a) =>
+      `<li>Scheduled for City Council ${esc(a.meeting_date)}${a.item_ref ? ` (item ${esc(a.item_ref)})` : ""}${a.agenda_url ? ` · ${escLinkify(a.agenda_url)}` : ""}</li>`).join("");
+    const votes = (c.council_votes || []).map((v) => {
+      const who = (v.members || []).map((m) => `${esc(m.member)} ${esc(m.vote)}`).join(", ");
+      const tally = `${v.yes}–${v.no}${v.abstain ? `, ${v.abstain} abstain` : ""}${v.absent ? `, ${v.absent} absent` : ""}`;
+      return `<li><b>${esc(v.meeting_date || "date not recorded")}</b> · ${esc(v.motion || "motion")} · ${esc(v.result)} ${esc(tally)}${v.tally_mismatch ? ` <span class="muted small">(printed tally ${esc(v.printed_tally)} differs from the members' votes)</span>` : ""}<br><span class="muted small">${who}</span></li>`;
+    }).join("");
+    return `
+      <section class="card">
+        <h3>City Council votes</h3>
+        ${sched ? `<ul>${sched}</ul>` : ""}
+        ${votes ? `<ul>${votes}</ul>` : `<p class="muted">No Council vote on this case in the export (meetings ${esc(cov.date_min)} to ${esc(cov.date_max)}).</p>`}
+        ${c.council_check ? `<p class="${c.council_check === "disagrees" ? "warn" : "muted"} small">${esc(COUNCIL_CHECK_TEXT[c.council_check] || c.council_check)}</p>` : ""}
+        <p class="muted small">From a VoteIQ export of the city's meeting videos; the city's case record stays authoritative.</p>
+      </section>`;
+  }
+
   // c: GET /api/land-use/cases/{case_id} (a pipeline city's Development Tracking case). Escaped HTML.
   function buildCaseHtml(c) {
     const act = (a) => (a && (a.action || a.date)) ? `${esc(a.action || "–")}${a.date ? ` · ${esc(a.date)}` : ""}` : '<span class="muted">not recorded</span>';
@@ -315,6 +345,7 @@
         <h3>Parcels</h3>
         ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Class · area</th><th>Flood (screening estimate)</th></tr></thead><tbody>${parcels}</tbody></table>` : '<p class="muted">No parcel linked.</p>'}
       </section>
+      ${buildCouncilVotesHtml(c)}
       ${buildConstraintsHtml(c.site_constraints)}
       <section class="card">
         <h3>Building permits on these parcels${c.permits_since ? ` since ${esc(c.permits_since)}` : ""}</h3>
@@ -329,7 +360,7 @@
   }
 
   const api = { esc, escLinkify, buildReviewCsv, buildHistoryHtml, buildLeadFactsHtml, buildPcItemHtml, buildFilingHtml,
-    buildCouncilHtml, buildConstraintsHtml, buildCaseHtml };
+    buildCouncilHtml, buildConstraintsHtml, buildCaseHtml, buildCouncilVotesHtml };
   Object.assign(root, api);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -39,7 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db as db_module
-from ingest import chesapeake_records, constraints as constraints_mod, council_actions, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
+from ingest import chesapeake_records, constraints as constraints_mod, council_actions, council_votes as council_votes_mod, filings as filings_mod, flood_stats, land_use, land_use_stats, lead_facts, \
     pc_hearings, quality
 from ingest.flood import CELL_SIZE, MAX_FLOOD_CELL_BYTES, cell_bbox, empty_cell_bytes, etag_of
 
@@ -1031,11 +1031,105 @@ def case_detail(case_id: str):
         permit_runs = conn.execute("SELECT MIN(since_date), MAX(completed_at) FROM ingestion_runs WHERE locality = ? "
                                    "AND status = 'success'", (r["locality"],)).fetchone()
         out["permits_observed"] = {"from": permit_runs[0], "to": permit_runs[1]} if permit_runs[0] else None
+        votes = _case_council_votes(conn, r["locality"], case_id)
+        out["council_votes"] = votes
+        out["council_check"] = council_votes_mod.case_check(votes, r["cc_action"], True) if votes else None
+        out["council_scheduled"] = [dict(x) for x in conn.execute(
+            "SELECT a.meeting_date, a.item_ref, a.title, a.agenda_url FROM council_agenda_effective a, "
+            "json_each(a.case_ids_json) j WHERE a.locality = ? AND j.value = ? AND a.meeting_date >= date('now') "
+            "ORDER BY a.meeting_date", (r["locality"], case_id))]
+        out["council_votes_coverage"] = _council_coverage(conn, r["locality"])
         out["geometry"] = json.loads(r["geom_geojson"]) if r["geom_geojson"] else None
         out["site_constraints"] = constraints_mod.public_constraints(conn, out["gpins"])
         out["data_as_of"] = quality.data_as_of(conn)
     out["notice"] = CASE_NOTICE
     return out
+
+
+COUNCIL_VOTES_NOTICE = ("Council votes from a VoteIQ export of the city's meeting videos. The city's own case record "
+                        "stays authoritative; a vote is shown next to it, never used to set a case stage. Tallies are "
+                        "counted from each member's recorded vote.")
+
+
+def _council_coverage(conn, locality: str) -> Optional[dict]:
+    load = conn.execute("SELECT source, votes, undated_votes, date_min, date_max, loaded_at FROM council_vote_loads "
+                        "WHERE locality = ? AND is_active = 1", (locality,)).fetchone()
+    return dict(load) if load else None
+
+
+def _vote_out(conn, v: dict) -> dict:
+    members = [dict(m) for m in conn.execute(
+        "SELECT m.member, m.vote FROM council_member_votes m WHERE m.load_id = ? AND m.vote_id = ? ORDER BY m.member",
+        (v["load_id"], v["vote_id"]))]
+    return {k: v[k] for k in ("vote_id", "meeting_date", "agenda_item", "title", "motion", "motion_kind", "moved_by",
+                              "seconded_by", "result", "yes", "no", "abstain", "absent", "printed_tally",
+                              "tally_mismatch", "category")} | {"case_ids": json.loads(v["case_ids_json"]),
+                                                                "members": members}
+
+
+def _case_council_votes(conn, locality: str, case_id: str) -> list[dict]:
+    rows = [dict(x) for x in conn.execute(
+        "SELECT v.* FROM council_votes_effective v, json_each(v.case_ids_json) j WHERE v.locality = ? AND j.value = ? "
+        "ORDER BY v.meeting_date IS NULL, v.meeting_date, v.vote_id", (locality, case_id))]
+    return [_vote_out(conn, v) for v in rows]
+
+
+@app.get("/api/land-use/council-votes")
+def council_votes_route(
+    locality: str = Query("chesapeake"), result: Optional[list[str]] = Query(None), has_case: bool = False,
+    date_from: Optional[str] = None, date_to: Optional[str] = None, limit: int = Query(500, ge=1, le=5000),
+):
+    """A city's Council votes (VoteIQ export), newest first; undated votes last."""
+    _validate_date(date_from, "date_from")
+    _validate_date(date_to, "date_to")
+    results = parse_tokens(result, db_module.COUNCIL_VOTE_RESULTS, "result")
+    where, args = ["locality = ?"], [locality]
+    if results:
+        where.append(f"result IN ({','.join('?' * len(results))})")
+        args += results
+    if has_case:
+        where.append("case_ids_json != '[]'")
+    if date_from:
+        where.append("meeting_date >= ?")
+        args.append(date_from)
+    if date_to:
+        where.append("meeting_date <= ?")
+        args.append(date_to)
+    with _ro() as conn:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM council_votes_effective WHERE {' AND '.join(where)} "
+            "ORDER BY meeting_date IS NULL, meeting_date DESC, vote_id LIMIT ?", (*args, limit))]
+        items = [_vote_out(conn, v) for v in rows]
+        coverage = _council_coverage(conn, locality)
+    return {"votes": items, "count": len(items), "coverage": coverage, "notice": COUNCIL_VOTES_NOTICE}
+
+
+@app.get("/api/council/members")
+def council_members_route(locality: str = Query("chesapeake")):
+    """Per member, on Council votes that name a land-use case: how often they voted yes, no,
+    abstained or were absent. Counts only: no scores, deltas or rankings."""
+    with _ro() as conn:
+        rows = conn.execute(
+            "SELECT m.member, m.vote, COUNT(*) AS n FROM council_member_votes m JOIN council_votes_effective v "
+            "ON v.load_id = m.load_id AND v.vote_id = m.vote_id WHERE v.locality = ? AND v.case_ids_json != '[]' "
+            "GROUP BY 1, 2", (locality,)).fetchall()
+        seats = {r["name"]: r["seat"] for r in conn.execute(
+            "SELECT c.name, c.seat FROM council_members c JOIN council_vote_loads l ON l.load_id = c.load_id "
+            "AND l.is_active = 1 WHERE l.locality = ?", (locality,))}
+        coverage = _council_coverage(conn, locality)
+    members: dict[str, dict] = {}
+    for r in rows:
+        m = members.setdefault(r["member"], {"member": r["member"], "yes": 0, "no": 0, "abstain": 0, "absent": 0})
+        m[r["vote"]] = r["n"]
+    for m in members.values():
+        total = m["yes"] + m["no"] + m["abstain"] + m["absent"]
+        m["land_use_votes"] = total
+        m["present_share"] = round((total - m["absent"]) / total, 4) if total else None
+        # the roster is the current council; earlier members appear by the surname the videos record
+        m["current_seat"] = next((seat for name, seat in seats.items() if m["member"].lower() in name.lower()), None)
+    return {"members": sorted(members.values(), key=lambda m: m["member"]), "coverage": coverage,
+            "notice": "Counts of each member's recorded votes on Council items that name a land-use case. "
+                      + COUNCIL_VOTES_NOTICE}
 
 
 @app.get("/api/development-records")

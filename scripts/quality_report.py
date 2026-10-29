@@ -133,6 +133,15 @@ def render(q: dict, synthetic: bool = False, provisional: bool = False) -> str:
                   f"- Parcels: {pq['parcels']}; flood-tagged (lead parcels: cases' and records'): {pq['parcels_flood_tagged']}",
                   "- Development plans and right-of-way permits are not building permits and are not counted as "
                   "permits.", ""]
+    for city, cq in sorted((q.get("council_votes") or {}).items()):
+        ld = cq["load"]
+        lines += [f"## {city}: City Council votes", "",
+                  f"- Source: {ld['source']}; {ld['votes']} votes, {ld['member_votes']} member votes, meetings "
+                  f"{ld['date_min']} to {ld['date_max']} ({ld['undated_votes']} votes without a recorded date)",
+                  f"- Votes naming a case: {cq['votes_naming_a_case']}; printed tallies differing from the members' "
+                  f"votes: {cq['tally_mismatches']}",
+                  f"- Cases against the city's own record: {cq['case_checks']}",
+                  "- The city's case record stays authoritative; a vote never sets a case stage.", ""]
     if q.get("source_rows"):
         lines += ["## Source rows", "", "| source | rows |", "|---|---:|"]
         lines += [f"| {k} | {v} |" for k, v in q["source_rows"].items()]

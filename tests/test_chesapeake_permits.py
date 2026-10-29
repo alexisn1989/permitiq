@@ -208,7 +208,7 @@ def test_v14_to_v15_keeps_every_permit_parcel_row(matched):
         assert [tuple(r) for r in conn.execute("SELECT * FROM permit_parcel ORDER BY permit_id")] == rows
         assert "address_exact" in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'permit_parcel'").fetchone()[0]
     assert _snapshot(matched["db"]) == before
-    assert db_module.schema_version(matched["db"]) == 15
+    assert db_module.schema_version(matched["db"]) == db_module.SCHEMA_VERSION
 
 
 def test_export_address_in_the_geocoders_form():
