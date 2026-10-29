@@ -282,6 +282,26 @@ def _post_census_batch(rows: list[tuple[str, str, str, str, str]]) -> str:
     return resp.text
 
 
+_CENSUS_MIN_SPLIT = 250
+
+
+def _census_with_split(addresses: dict[str, str]) -> tuple[dict[str, dict], set[str]]:
+    """Census results for a chunk, and the ids whose request failed. A failed
+    request (timeout, HTTP error) is retried as two halves down to
+    _CENSUS_MIN_SPLIT addresses; ids still failing are returned, never
+    treated as Census misses."""
+    try:
+        return geocode_census_batch(addresses), set()
+    except Exception:  # noqa: BLE001 - any request failure: split, or report the ids
+        if len(addresses) <= _CENSUS_MIN_SPLIT:
+            return {}, set(addresses)
+        ids = list(addresses)
+        half = len(ids) // 2
+        a, fa = _census_with_split({k: addresses[k] for k in ids[:half]})
+        b, fb = _census_with_split({k: addresses[k] for k in ids[half:]})
+        return {**a, **b}, fa | fb
+
+
 def geocode_census_batch(addresses: dict[str, str]) -> dict[str, dict]:
     """addresses: {unique_id: full_address}, at most _CENSUS_BATCH_CHUNK_SIZE
     entries (callers chunk larger sets). Returns {unique_id: {"lat":..,
@@ -467,6 +487,7 @@ def geocode_backlog_batch(
     census_chunk_size: int = _CENSUS_BATCH_CHUNK_SIZE,
     force: bool = False,
     nominatim_limiter: NominatimRateLimiter | None = None,
+    census_only: bool = False,
 ) -> dict:
     """Batch-first backlog geocoder for large catch-up runs. Flow:
       pending permits -> dedupe by normalized address -> cache lookup
@@ -583,13 +604,16 @@ def geocode_backlog_batch(
     for i in range(0, len(to_geocode_ids), census_chunk_size):
         chunk_ids = to_geocode_ids[i:i + census_chunk_size]
         chunk_addresses = {nid: to_geocode[nid] for nid in chunk_ids}
-        try:
-            census_raw = geocode_census_batch(chunk_addresses)
-        except Exception:  # noqa: BLE001 - don't lose the chunk's addresses, fall through
-            census_raw = {}
+        # a failed request is not "no match": split and retry; what still fails is not recorded as a miss
+        census_raw, failed = _census_with_split(chunk_addresses)
+        if failed:
             counts["errors"] += 1
+            counts["census_failed"] = counts.get("census_failed", 0) + len(failed)
 
         for normalized in chunk_ids:
+            if normalized in failed:  # never recorded as a Census miss; Nominatim may still resolve it
+                to_nominatim[normalized] = chunk_addresses[normalized]
+                continue
             group = address_groups[normalized]
             raw = census_raw.get(normalized)
             if raw is not None:
@@ -617,6 +641,9 @@ def geocode_backlog_batch(
                 _bump(group["locality"], "census_not_found")
                 to_nominatim[normalized] = chunk_addresses[normalized]
         conn.commit()  # checkpoint: this chunk's results are durable
+
+    if census_only:
+        to_nominatim = {}
 
     # Step 4: sequential, rate-limited Nominatim fallback for Census
     # misses/rejections only -- never parallel, never a retry storm.

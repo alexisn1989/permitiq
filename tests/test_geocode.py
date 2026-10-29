@@ -779,3 +779,24 @@ def test_backlog_batch_classifies_null_address_as_no_address(conn, monkeypatch):
     assert counts["no_address"] == 1
     row = conn.execute("SELECT * FROM permits WHERE source_permit_id='P1'").fetchone()
     assert row["geocode_status"] == "no_address"
+
+
+def test_backlog_batch_failed_census_request_is_split_and_never_recorded_as_a_miss(conn, monkeypatch):
+    for i in range(6):
+        insert_permit(conn, source_permit_id=f"P{i}", address=f"{i} Main St, Norfolk, VA")
+    calls = []
+
+    def flaky(addrs):  # the full chunk times out; halves succeed, except one half that keeps failing
+        calls.append(len(addrs))
+        if len(addrs) > 3 or any(v.startswith("0 ") for v in addrs.values()):
+            raise RuntimeError("timeout")
+        return {k: {"lat": 36.85, "lng": -76.28, "matched_address": v} for k, v in addrs.items()}
+
+    monkeypatch.setattr(geocode, "_CENSUS_MIN_SPLIT", 3)
+    monkeypatch.setattr(geocode, "geocode_census_batch", flaky)
+    counts = geocode.geocode_backlog_batch(conn, census_only=True)
+    assert calls[0] == 6 and counts["census_matched"] == 3 and counts["census_failed"] == 3
+    assert counts["census_not_found"] == 0 and counts["nominatim_attempted"] == 0
+    statuses = dict(conn.execute("SELECT geocode_status, COUNT(*) FROM permits GROUP BY 1").fetchall())
+    assert statuses == {"matched": 3, "pending": 3}  # failed ones stay pending, retried next run
+    assert conn.execute("SELECT COUNT(*) FROM geocode_cache WHERE status != 'matched'").fetchone()[0] == 0

@@ -38,6 +38,7 @@ def _print_counts(label: str, counts: dict) -> None:
     print(f"  nominatim_rejected       = {counts['nominatim_rejected']}")
     print(f"  nominatim_not_found      = {counts['nominatim_not_found']}")
     print(f"  errors                   = {counts['errors']}")
+    print(f"  census_failed (pending)  = {counts.get('census_failed', 0)}  (request failed; never recorded as a miss)")
     print(f"  newly_mapped             = {counts['newly_mapped']}")
     print(f"  mapped_before -> after   = {counts['mapped_before']} -> {counts['mapped_after']}")
     print(f"  remaining_pending        = {counts['remaining_pending']}")
@@ -62,13 +63,16 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="max pending permits to consider per locality")
     parser.add_argument("--force", action="store_true", help="also retry recent not_found/rejected rows")
     parser.add_argument("--analyze", action="store_true", help="print unmapped-reason breakdown after the run")
+    parser.add_argument("--census-only", action="store_true",
+                        help="no Nominatim fallback (large catch-ups): Census misses stay not_found, failed requests pending")
     args = parser.parse_args()
 
     localities = ["norfolk", "virginia_beach", "chesapeake"] if args.locality == "all" else [args.locality]
 
     for loc in localities:
         with db_module.db() as conn:
-            counts = geocode_backlog_batch(conn, locality=loc, limit=args.limit, force=args.force)
+            counts = geocode_backlog_batch(conn, locality=loc, limit=args.limit, force=args.force,
+                                           census_only=args.census_only)
         _print_counts(loc, counts)
 
     if args.analyze:
