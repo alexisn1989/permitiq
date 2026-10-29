@@ -51,6 +51,8 @@ STATUS_BUCKET_MAP = {
     "Model Approved": "other", "In Service": "other", "Temp CO": "other", "Closed - Incomplete": "other",
     # seen only on Elevator Asset records (inspection-certificate cycle, not construction)
     "Ready for Renewal": "other", "Referred to Code Official": "other", "Second Notice Sent": "other",
+    # seen once (a 2024 foundation permit); the city's finished status is "Closed", so no outcome is claimed
+    "Complete": "other",
 }
 
 
