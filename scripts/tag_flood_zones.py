@@ -88,6 +88,7 @@ def main(argv=None) -> int:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--all", action="store_true", help="Recompute every in-scope permit, not just stale ones")
     p.add_argument("--decisions", action="store_true", help="Tag land-use decision addresses instead of permits")
+    p.add_argument("--locality", help="only this city (default: every city with a flood map)")
     args = p.parse_args(argv)
 
     with db_module.db() as conn:
@@ -97,6 +98,8 @@ def main(argv=None) -> int:
         ).fetchall()
         for scope in scopes:
             locality, load_id = scope["locality"], scope["load_id"]
+            if args.locality and locality != args.locality:
+                continue
             n_permits = conn.execute("SELECT COUNT(*) FROM permits WHERE locality = ?", (locality,)).fetchone()[0]
             if not n_permits and not (args.decisions and locality == "virginia_beach"):
                 print(f"{locality}: no permits to tag (none published or ingested); skipped")
