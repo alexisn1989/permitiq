@@ -84,8 +84,9 @@ def match_city_permits(conn, index, load_id, locality, everything, ts) -> Counte
         m = P.match_permit_address(index, house, street, r["lat"], r["lng"])
         out[m["method"]] += 1
         out["disputed"] += m["disputed"]
+        out["address_trusted_within_tolerance"] += int(m.get("point_gap_ft") is not None and not m["disputed"])
         fp = P.fingerprint("permit_address", load_id, house, street, r["lat"], r["lng"], m["method"], m["gpin"],
-                           m["alt_gpin"])
+                           m["alt_gpin"], m["disputed"], P.ADDRESS_POINT_TOLERANCE_FT)
         rows.append((r["id"], load_id, m["method"], m["gpin"], m["alt_gpin"], m["disputed"], m["gpin_point_agree"],
                      r["lat"], r["lng"], None, fp, ts))
     conn.executemany(_PERMIT_UPSERT, rows)

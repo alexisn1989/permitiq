@@ -173,6 +173,11 @@ class ParcelIndex:
                 self.by_address[(r["house"], r["street_norm"])].append(r["gpin"])
         self.tree = STRtree([r["geom"] for r in rows]) if rows else None
 
+    def geom_of(self, gpin: str):
+        if not hasattr(self, "_by_gpin"):
+            self._by_gpin = {r["gpin"]: r["geom"] for r in self.rows}
+        return self._by_gpin[gpin]
+
     def at_point(self, lat, lng) -> list[str]:
         if lat is None or lng is None or self.tree is None:
             return []
@@ -237,7 +242,20 @@ def match_permit(index: ParcelIndex, raw_gpin, lat, lng) -> dict:
     return {**out, "method": "ambiguous" if len(pts) > 1 else "no_parcel"}
 
 
-def match_permit_address(index: ParcelIndex, house, street_norm, lat, lng) -> dict:
+# A permit's geocoded point within this distance of its exact-address parcel confirms the
+# address (user rule, 2026-10-29: Census interpolates along the street, so its point often
+# lands on a neighbouring lot; the median gap on the Chesapeake run was 139 ft).
+ADDRESS_POINT_TOLERANCE_FT = 200.0
+
+
+def point_to_parcel_ft(index: ParcelIndex, gpin: str, lat, lng) -> float:
+    from ingest.constraints import to_feet  # local import: constraints imports this module
+    geom = index.geom_of(gpin)
+    return to_feet(geom).distance(to_feet(Point(lng, lat)))
+
+
+def match_permit_address(index: ParcelIndex, house, street_norm, lat, lng,
+                         tolerance_ft: float | None = ADDRESS_POINT_TOLERANCE_FT) -> dict:
     """A permit with no parcel number (Chesapeake): its exact address and its
     geocoded point, against one city's parcel index only. The address is the
     record's own evidence and the point a geocode estimate, so when both name a
@@ -254,8 +272,10 @@ def match_permit_address(index: ParcelIndex, house, street_norm, lat, lng) -> di
             return {**out, "method": "address_exact", "gpin": addr}
         if point == addr:
             return {**out, "method": "address_exact", "gpin": addr, "gpin_point_agree": 1}
-        return {**out, "method": "address_exact", "gpin": addr, "alt_gpin": point, "disputed": 1,
-                "gpin_point_agree": 0}
+        gap = round(point_to_parcel_ft(index, addr, lat, lng), 1)
+        disputed = int(tolerance_ft is None or gap > tolerance_ft)  # within tolerance: the address stands
+        return {**out, "method": "address_exact", "gpin": addr, "alt_gpin": point, "disputed": disputed,
+                "gpin_point_agree": 0, "point_gap_ft": gap}
     if len(cands) > 1:
         if point is not None and point in cands:
             return {**out, "method": "point_in_parcel", "gpin": point, "gpin_point_agree": 1}

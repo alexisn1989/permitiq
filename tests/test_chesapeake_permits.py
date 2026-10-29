@@ -111,7 +111,9 @@ def _snapshot(path):
 CHES = {"0001000000010": ((-76.30, 36.70, -76.29, 36.71), 3853, "SHORE DR"),   # same address as a VB parcel
         "0001000000020": ((-76.28, 36.70, -76.27, 36.71), 10, "CONDO WAY"),
         "0001000000030": ((-76.26, 36.70, -76.25, 36.71), 10, "CONDO WAY"),
-        "0001000000040": ((-76.24, 36.70, -76.23, 36.71), 50, "POINT RD")}
+        "0001000000040": ((-76.24, 36.70, -76.23, 36.71), 50, "POINT RD"),
+        "0001000000050": ((-76.220, 36.700, -76.219, 36.701), 60, "NEAR RD"),       # neighbours
+        "0001000000060": ((-76.219, 36.700, -76.218, 36.701), 62, "NEAR RD")}
 
 
 def _ches_parcels(env):
@@ -232,3 +234,22 @@ def test_case_lists_same_parcel_permits_since_its_final_action(matched, tmp_path
     assert d["permits_since"] == "2025-07-15"
     assert [x["source_permit_id"] for x in d["permits_on_site"]] == ["BLD-RES-2026-00011"]  # the earlier one is before
     assert d["permits_observed"]["from"] == "2025-06-01"
+
+
+def test_point_within_200_ft_of_the_address_parcel_confirms_the_address(matched):
+    _ches_parcels(matched)
+    add(matched,
+        _cp("Q1", "60 NEAR RD CHESAPEAKE VA 23320", (36.7005, -76.2189)),    # ~29 ft into the next lot
+        _cp("Q2", "50 POINT RD CHESAPEAKE VA 23320", (36.705, -76.295)))     # miles away: still disputed
+    assert match(matched, "--locality", "chesapeake") == 0
+    with db_module.db_readonly(matched["db"]) as conn:
+        m = {r["source_permit_id"]: dict(r) for r in conn.execute(
+            "SELECT p.source_permit_id, e.* FROM permit_parcel_effective e JOIN permits p ON p.id = e.permit_id "
+            "WHERE p.locality = 'chesapeake'")}
+    assert (m["Q1"]["disputed"], m["Q1"]["link_gpin"], m["Q1"]["alt_gpin"]) == (0, "0001000000050", "0001000000060")
+    assert (m["Q2"]["disputed"], m["Q2"]["link_gpin"]) == (1, None)
+    from ingest import parcels as P
+    idx = P.ParcelIndex([{"gpin": g, "gpin_digits": g, "gpin10": None, "house": h, "street_norm": st,
+                          "geom": __import__("shapely.geometry", fromlist=["box"]).box(*b)} for g, (b, h, st) in CHES.items()])
+    assert 20 < P.point_to_parcel_ft(idx, "0001000000050", 36.7005, -76.2189) < 40
+    assert P.match_permit_address(idx, 60, "NEAR RD", 36.7005, -76.2189, tolerance_ft=None)["disputed"] == 1
