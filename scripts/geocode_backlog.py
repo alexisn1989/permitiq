@@ -58,13 +58,13 @@ def _print_analysis(label: str, analysis: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Batch-first PermitIQ geocoding backlog runner")
-    parser.add_argument("--locality", choices=["norfolk", "virginia_beach", "all"], default="all")
+    parser.add_argument("--locality", choices=["norfolk", "virginia_beach", "chesapeake", "all"], default="all")
     parser.add_argument("--limit", type=int, default=None, help="max pending permits to consider per locality")
     parser.add_argument("--force", action="store_true", help="also retry recent not_found/rejected rows")
     parser.add_argument("--analyze", action="store_true", help="print unmapped-reason breakdown after the run")
     args = parser.parse_args()
 
-    localities = ["norfolk", "virginia_beach"] if args.locality == "all" else [args.locality]
+    localities = ["norfolk", "virginia_beach", "chesapeake"] if args.locality == "all" else [args.locality]
 
     for loc in localities:
         with db_module.db() as conn:

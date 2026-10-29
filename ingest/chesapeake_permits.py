@@ -54,7 +54,20 @@ STATUS_BUCKET_MAP = {
 }
 
 
-_CITY_TAIL = re.compile(r"\s+CHESAPEAKE\s+VA(?:\s+\d{5}(?:-\d{4})?)?\s*$", re.I)
+_CITY_TAIL = re.compile(r"[\s,]+CHESAPEAKE,?\s+VA(?:\s+\d{5}(?:-\d{4})?)?\s*$", re.I)
+_EXPORT_ADDRESS = re.compile(r"^(?P<street>.*?)\s+CHESAPEAKE\s+VA(?:\s+(?P<zip>\d{5})(?:-\d{4})?)?\s*$", re.I)
+
+
+def standard_address(address: str | None) -> str | None:
+    """The export's "1234 EXAMPLE RD CHESAPEAKE VA 23320" in the project's
+    "STREET, City, ST ZIP" form, which the geocoder splits for Census; any
+    other shape is kept as printed."""
+    if not address:
+        return None
+    m = _EXPORT_ADDRESS.match(address.strip())
+    if not m or not m.group("street"):
+        return address.strip()
+    return f"{m.group('street')}, Chesapeake, VA {m.group('zip') or ''}".strip()
 
 
 def street_parts(address: str | None) -> tuple[int | None, str | None]:
@@ -116,6 +129,6 @@ def to_permit(row: dict) -> NormalizedPermit:
     return NormalizedPermit(
         locality=LOCALITY, source_permit_id=row["Record Number"], source_name=SOURCE_NAME, source_url=SOURCE_URL,
         source_record_url=None,  # the export carries no per-record link
-        address=row["Address"] or None, permit_type=row["Record Type"] or None, status=status,
+        address=standard_address(row["Address"]), permit_type=row["Record Type"] or None, status=status,
         status_bucket=STATUS_BUCKET_MAP.get(status, "other") if status else "other",
         applied_date=row_date(row).isoformat(), description=shown, raw=raw)

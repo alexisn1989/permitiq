@@ -207,3 +207,12 @@ def test_v14_to_v15_keeps_every_permit_parcel_row(matched):
         assert "address_exact" in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'permit_parcel'").fetchone()[0]
     assert _snapshot(matched["db"]) == before
     assert db_module.schema_version(matched["db"]) == 15
+
+
+def test_export_address_in_the_geocoders_form():
+    from ingest.geocode import _split_address_for_batch
+    a = CP.standard_address("1234 N EXAMPLE BLVD CHESAPEAKE VA 23320-1234")
+    assert a == "1234 N EXAMPLE BLVD, Chesapeake, VA 23320"
+    assert _split_address_for_batch(a) == ("1234 N EXAMPLE BLVD", "Chesapeake", "VA", "23320")
+    assert CP.street_parts(a) == CP.street_parts("1234 N EXAMPLE BLVD CHESAPEAKE VA 23320") == (1234, "N EXAMPLE BLVD")
+    assert CP.standard_address("LOT 5 EXAMPLE RD") == "LOT 5 EXAMPLE RD" and CP.standard_address("") is None
