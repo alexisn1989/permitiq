@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **527 tests**, all passing, zero live network calls |
+| **Test suite** | **541 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -560,7 +560,24 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
   - the city's free-text case notes are never served, since they can name owners or requesters;
   - project names and plan titles are shown only when clearly an organization;
   - staff login IDs on the plan layer are never stored.
-- **Not available:** "approved → permit" for Chesapeake, because there is no permit data. Building permits sit behind Accela Citizen Access. A public export or a FOIA request is the route; the search site is not scraped.
+- **Building permits** come from Accela Citizen Access search results, downloaded by hand (the site's own "Download results", one year per file; nothing queries Accela):
+
+  ```bash
+  python scripts/import_chesapeake_permits.py --dir downloads/ --counts downloads/counts.csv   # file,start,end,page_count
+  python scripts/geocode_backlog.py --locality chesapeake --census-only
+  python scripts/match_parcels.py --locality chesapeake
+  ```
+  - **Complete or nothing:** each file's rows must equal the count the search page showed, dates must fall in the file's window, and windows must be contiguous.
+  - **Statuses** are mapped only for those seen in real downloads; an unseen one stops the import.
+  - **Project names** are mostly owners' names, so they are kept only when clearly an organization.
+  - **Parcels:** the export has no parcel number, so a permit matches a Chesapeake parcel by exact address, with the geocoded point as a check. Disagreement is a dispute (no link until reviewed); several parcels at one address stay ambiguous unless the point picks one.
+  - **Real run (10/29/2024 – 10/28/2026):**
+    - 33,989 permits, both years equal to the page counts;
+    - 74% geocoded by Census;
+    - 85.1% on a parcel (28,352 by address, 583 by point);
+    - 2,070 disputes (median 139 ft between the Census point and the address parcel);
+    - 1,050 approved cases have a same-parcel permit since their final action (candidates, not confirmed links);
+    - Virginia Beach results hash-identical.
 
 ---
 
@@ -611,7 +628,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**527 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**541 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 
@@ -623,7 +640,7 @@ Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate
 |---|---|
 | **Norfolk** | Live — Socrata SODA API, updated daily |
 | **Virginia Beach** | Live — ArcGIS REST feature layer |
-| Chesapeake | Pipeline only — land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits are not published |
+| Chesapeake | Land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits from Accela search results downloaded by hand (2024-10-29 → 2026-10-28) |
 | Portsmouth | Source under review — see the North Carolina lookalike above |
 | Hampton · Suffolk · Newport News | Unavailable — no confirmed open dataset located |
 
