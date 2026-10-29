@@ -571,12 +571,11 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
   - **Statuses** are mapped only for those seen in real downloads; an unseen one stops the import.
   - **Project names** are mostly owners' names, so they are kept only when clearly an organization.
   - **Parcels:** the export has no parcel number, so a permit matches a Chesapeake parcel by exact address, with the geocoded point as a check. Disagreement is a dispute (no link until reviewed); several parcels at one address stay ambiguous unless the point picks one.
-  - **Real run (10/29/2024 – 10/28/2026):**
-    - 33,989 permits, both years equal to the page counts;
-    - 74% geocoded by Census;
-    - 85.1% on a parcel (28,352 by address, 583 by point);
-    - 2,070 address / point disagreements (median 139 ft). By rule, a point within 200 ft of the address parcel confirms the address: 1,347 resolved, 723 remain for review;
-    - 1,050 approved cases have a same-parcel permit since their final action (candidates, not confirmed links);
+  - **Real run (10/29/2023 – 10/28/2026, three yearly files):**
+    - 49,333 permits; each year's rows equal the count the search page showed (15,359 / 15,457 / 18,565);
+    - 36,580 (74%) geocoded by Census;
+    - 42,946 (87.1%) on a parcel (42,034 by address, 912 by point); 41,833 usable links;
+    - address / point disagreements: by rule, a point within 200 ft of the address parcel confirms the address; 1,113 remain disputed for review;
     - Virginia Beach results hash-identical.
     - **Spot check (2026-10-29):** 5 permits (3 by address, 1 by point, 1 address / point disagreement) checked by hand against their Accela records: all 5 addresses and parcel numbers agreed. In the disagreement, Accela confirmed the address parcel; its Census point was 163 ft away, so the 200-ft rule had already linked it correctly. Five checks are a sanity check, not a measured accuracy rate (95% interval 57–100%).
 
@@ -641,7 +640,7 @@ Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate
 |---|---|
 | **Norfolk** | Live — Socrata SODA API, updated daily |
 | **Virginia Beach** | Live — ArcGIS REST feature layer |
-| Chesapeake | Land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits from Accela search results downloaded by hand (2024-10-29 → 2026-10-28) |
+| Chesapeake | Land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits from Accela search results downloaded by hand (2023-10-29 → 2026-10-28) |
 | Portsmouth | Source under review — see the North Carolina lookalike above |
 | Hampton · Suffolk · Newport News | Unavailable — no confirmed open dataset located |
 
