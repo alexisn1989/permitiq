@@ -575,7 +575,7 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
     - 33,989 permits, both years equal to the page counts;
     - 74% geocoded by Census;
     - 85.1% on a parcel (28,352 by address, 583 by point);
-    - 2,070 disputes (median 139 ft between the Census point and the address parcel);
+    - 2,070 address / point disagreements (median 139 ft). By rule, a point within 200 ft of the address parcel confirms the address: 1,347 resolved, 723 remain for review;
     - 1,050 approved cases have a same-parcel permit since their final action (candidates, not confirmed links);
     - Virginia Beach results hash-identical.
 
