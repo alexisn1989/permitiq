@@ -578,6 +578,7 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
     - 2,070 address / point disagreements (median 139 ft). By rule, a point within 200 ft of the address parcel confirms the address: 1,347 resolved, 723 remain for review;
     - 1,050 approved cases have a same-parcel permit since their final action (candidates, not confirmed links);
     - Virginia Beach results hash-identical.
+    - **Spot check (2026-10-29):** 5 permits (3 by address, 1 by point, 1 address / point disagreement) checked by hand against their Accela records: all 5 addresses and parcel numbers agreed. In the disagreement, Accela confirmed the address parcel; its Census point was 163 ft away, so the 200-ft rule had already linked it correctly. Five checks are a sanity check, not a measured accuracy rate (95% interval 57–100%).
 
 ---
 
