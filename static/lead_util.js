@@ -350,7 +350,7 @@
       <section class="card">
         <h3>Building permits on these parcels${c.permits_since ? ` since ${esc(c.permits_since)}` : ""}</h3>
         ${permits ? `<ul>${permits}</ul>` : `<p class="muted">${c.permits_observed ? "None in the permit data." : "No permit data loaded for this city."}</p>`}
-        <p class="muted small">${c.permits_observed ? `Permit data: records from ${esc(c.permits_observed.from)} (Accela search results, imported ${esc((c.permits_observed.to || "").slice(0, 10))}). ` : ""}Same-parcel permits are candidates: a permit on the site may belong to a different project.</p>
+        <p class="muted small">${c.permits_observed ? `Permit data: records from ${esc(c.permits_observed.from)} (last imported ${esc((c.permits_observed.to || "").slice(0, 10))}). ` : ""}Same-parcel permits are candidates: a permit on the site may belong to a different project.</p>
       </section>
       ${recs || c.locality === "chesapeake" ? `<section class="card">
         <h3>Development plans and right-of-way permits on these parcels</h3>

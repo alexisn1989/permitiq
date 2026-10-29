@@ -255,8 +255,11 @@ NORFOLK_LAYERS = (
     Layer("nf_wave_action", f"{_NZ}/35", "line_crossing", "Limit of Moderate Wave Action",
           "FEMA's limit of moderate wave action (1.5 ft waves): coastal construction standards seaward of it.",
           near_ft=300, locality="norfolk"),
+    # the layer codes upland as "U" (most of the city) and includes open deepwater (E1 / M1 subtidal); neither is a
+    # wetland on a parcel, the same rule as the NWI layer's deepwater exclusion
     Layer("nf_wetlands", f"{_NE}/1", "polygon_share", "Wetlands (city layer)",
-          "Mapped wetland (NWI-style code), not a delineation.", ("ATTRIBUTE",), "ATTRIBUTE", locality="norfolk"),
+          "Mapped wetland (NWI-style code), not a delineation.", ("ATTRIBUTE",), "ATTRIBUTE",
+          where="ATTRIBUTE <> 'U' AND ATTRIBUTE NOT LIKE 'E1%' AND ATTRIBUTE NOT LIKE 'M1%'", locality="norfolk"),
     # federal and state layers, Norfolk's extent / survey area
     Layer("nf_usda_soils", "VA715", "polygon_share", "Soils (USDA soil survey)",
           LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",

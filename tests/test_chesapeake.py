@@ -180,6 +180,7 @@ def test_city_layers_share_national_behaviour_and_keys():
     assert C.ENVELOPES["chesapeake"] != C.ENVELOPES["virginia_beach"] != C.ENVELOPES["norfolk"]
     assert C._base("nf_usda_soils") == "usda_soils" and C.LAYERS["nf_usda_soils"].url == "VA715"
     assert "State = 'VIRGINIA'" in C.LAYERS["nf_nrhp_points"].where  # not Norfolk County, Massachusetts
+    assert "ATTRIBUTE <> 'U'" in C.LAYERS["nf_wetlands"].where  # upland is not a wetland
 
 
 def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):

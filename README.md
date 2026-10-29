@@ -16,7 +16,7 @@ The interesting part isn't the CRUD. It's that **civic open data is messy in way
 |---|---|
 | **Live dataset** | 10,850 real permits — 3,882 Norfolk, 6,968 Virginia Beach |
 | **Geocoded coverage** | **91.1%** (9,886 mapped) — every remaining record has an explicit, auditable reason |
-| **Test suite** | **550 tests**, all passing, zero live network calls |
+| **Test suite** | **554 tests**, all passing, zero live network calls |
 | **Stack** | Python · FastAPI · SQLite (WAL) · vanilla JS + Leaflet · no ORM, no build step |
 | **Data sources** | Socrata SODA API (Norfolk) · ArcGIS REST (Virginia Beach) · US Census Geocoder · Nominatim |
 | **Backlog geocoding** | ~6 minutes for 7,800 addresses (was ~3 hours before batch rearchitecture) |
@@ -579,6 +579,44 @@ python scripts/chesapeake_report.py --out reports/          # chesapeake_cases.c
     - Virginia Beach results hash-identical.
     - **Spot check (2026-10-29):** 5 permits (3 by address, 1 by point, 1 address / point disagreement) checked by hand against their Accela records: all 5 addresses and parcel numbers agreed. In the disagreement, Accela confirmed the address parcel; its Census point was 163 ft away, so the 200-ft rule had already linked it correctly. Five checks are a sanity check, not a measured accuracy rate (95% interval 57–100%).
 
+### Norfolk: parcels, flood, constraints, approved land-use items
+
+```bash
+python run_ingest.py --locality norfolk --since 2015-01-01   # 128,051 permits (Socrata fahm-yuh4)
+python scripts/load_parcels.py --locality norfolk             # 67,289 features -> 67,286 parcels (GPIN)
+python scripts/match_parcels.py --locality norfolk
+python scripts/load_flood_zones.py --dfirm 510104
+python scripts/tag_flood_zones.py --locality norfolk && python scripts/tag_parcel_flood.py --locality norfolk
+python scripts/load_norfolk.py --all                          # CUPs and conditional zoning
+python scripts/load_constraints.py --layer nf_cbpa            # ... each nf_ layer
+python scripts/tag_parcel_constraints.py --locality norfolk
+```
+
+- **Permits:**
+  - every permit carries its parcel GPIN and the parcel's coordinates, used as native coordinates;
+  - paging is ordered by application date and Socrata's `:id`, since ordering by date alone missed 645 of 128,051 permits between pages;
+  - 283 source rows repeat a permit number and count once.
+- **Parcels:** 99.9% of permits are on a parcel (127,483 by GPIN, 408 by point); 38 GPIN / point disputes are listed for review. Norfolk is matched only against Norfolk parcels, and a Norfolk 10-digit GPIN never answers a Virginia Beach GPIN10.
+- **Flood** (FEMA DFIRM 510104): 32,958 parcels screened, 334 in a coastal V zone.
+- **Constraints** (`nf_` layers):
+  - Chesapeake Bay Preservation Area (RPA / IDA polygons, acres measured);
+  - zoning, conditional zoning, zoning overlays;
+  - Navy airfield accident-potential and noise zones;
+  - FEMA's limit of moderate wave action;
+  - city wetlands (upland "U" and open deepwater excluded);
+  - USDA VA715, NWI, National Register (State = Virginia, not Norfolk County, MA), VDOT "City of Norfolk".
+
+  Norfolk publishes no sewer / water lines.
+- **Approved land-use items:**
+  - 1,482 conditional use permits and 351 conditional zonings, one per City Council ordinance;
+  - expiry dates shown; applicant and notes not stored;
+  - Norfolk publishes no pending-case pipeline;
+  - 1,174 approved items have a same-parcel permit since approval (candidates).
+- **Checked:**
+  - 4 parcels × 6 layers against the city server's spatial queries: 22 of 22 comparable checks agree, and the wave-action layer was checked by bounding box;
+  - 4 flood classes agree with FEMA;
+  - Virginia Beach and Chesapeake results hash-identical.
+
 ### Chesapeake City Council votes (VoteIQ export)
 
 ```bash
@@ -655,7 +693,7 @@ Filters: `locality`, `permit_type`, `status`, `status_bucket`, `flood_class` (co
 python -m pytest tests/ -v
 ```
 
-**550 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
+**554 tests**, run by CI (`.github/workflows/ci.yml`) on every push and PR, together with a scan for `.env` files and keys. No live network calls — fixtures are sanitized captures of real responses. Sleeps and clocks are injected, so rate-limiter behaviour is verified deterministically without the suite ever waiting a real second (full run: ~20s).
 
 Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate-precedence rules, both adapters, geocoding (bbox and locality validation, cache reuse, retry gating, `no_address` classification, batch result mapping, resumability), and the full API surface (SQL-injection safety, pagination stability, export caps, `raw_json` non-exposure).
 
@@ -665,7 +703,7 @@ Coverage includes date/schema normalization, ArcGIS epoch conversion, coordinate
 
 | Locality | Status |
 |---|---|
-| **Norfolk** | Live — Socrata SODA API, updated daily |
+| **Norfolk** | Live — Socrata SODA API, updated daily; parcels, flood, constraints, approved CUPs / conditional zoning |
 | **Virginia Beach** | Live — ArcGIS REST feature layer |
 | Chesapeake | Land-use cases, development plans, ROW permits, parcels, flood, constraints; building permits from Accela search results downloaded by hand (2023-10-29 → 2026-10-28) |
 | Portsmouth | Source under review — see the North Carolina lookalike above |
