@@ -330,7 +330,7 @@ def test_facets_availability_states(seeded_db):
     by_key = {loc["key"]: loc["availability"] for loc in resp["localities"]}
     assert by_key["norfolk"] == "available"
     assert by_key["virginia_beach"] == "available"
-    assert by_key["chesapeake"] == "source_under_review"
+    assert by_key["chesapeake"] == "available"
     assert by_key["portsmouth"] == "source_under_review"
     assert by_key["hampton"] == "unavailable"
     assert by_key["suffolk"] == "unavailable"
@@ -346,7 +346,7 @@ def test_facets_only_observed_values(seeded_db):
 def test_facets_no_data_for_unsupported_localities(seeded_db):
     resp = client.get("/api/facets").json()
     assert "hampton" not in resp["permit_types"]
-    assert "chesapeake" not in resp["permit_types"]
+    assert "portsmouth" not in resp["permit_types"]
     assert "suffolk" not in resp["statuses"]
 
 
@@ -410,7 +410,7 @@ def test_data_status_unsupported_localities_are_zeroed(seeded_db):
     assert by_locality["hampton"]["record_count"] == 0
     assert by_locality["hampton"]["availability"] == "unavailable"
     assert by_locality["hampton"]["last_successful_ingestion"] is None
-    assert by_locality["chesapeake"]["availability"] == "source_under_review"
+    assert by_locality["portsmouth"]["availability"] == "source_under_review"
 
 
 def test_data_status_reads_ingestion_runs(seeded_db):

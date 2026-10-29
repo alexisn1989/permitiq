@@ -290,6 +290,8 @@
       `<tr><td>${esc(p.gpin)}</td><td>${esc(p.prop_class || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td></tr>`).join("");
     const recs = (c.development_records || []).map((r) =>
       `<li>${esc(r.record_id)} · ${esc(r.record_type || "")} · ${esc(r.status || "")}${r.submitted_date ? ` · submitted ${esc(r.submitted_date)}` : ""}${r.approved_date ? ` · approved ${esc(r.approved_date)}` : ""}</li>`).join("");
+    const permits = (c.permits_on_site || []).map((p) =>
+      `<li>${esc(p.source_permit_id)} · ${esc(p.permit_type || "")} · applied ${esc(p.applied_date)} <span class="muted small">${esc(p.status || "")}</span></li>`).join("");
     const zoning = c.zoning_from || c.zoning_to ? `${esc(c.zoning_from || "–")} → ${esc(c.zoning_to || "–")}` : '<span class="muted">not recorded</span>';
     return `
       <section class="card">
@@ -315,9 +317,13 @@
       </section>
       ${buildConstraintsHtml(c.site_constraints)}
       <section class="card">
+        <h3>Building permits on these parcels${c.permits_since ? ` since ${esc(c.permits_since)}` : ""}</h3>
+        ${permits ? `<ul>${permits}</ul>` : `<p class="muted">${c.permits_observed ? "None in the permit data." : "No permit data loaded for this city."}</p>`}
+        <p class="muted small">${c.permits_observed ? `Permit data: records from ${esc(c.permits_observed.from)} (Accela search results, imported ${esc((c.permits_observed.to || "").slice(0, 10))}). ` : ""}Same-parcel permits are candidates: a permit on the site may belong to a different project.</p>
+      </section>
+      <section class="card">
         <h3>Development plans and right-of-way permits on these parcels</h3>
         ${recs ? `<ul>${recs}</ul>` : '<p class="muted">None published.</p>'}
-        <p class="muted small">The city publishes no building permits, so construction cannot be confirmed here.</p>
       </section>
       <p class="muted small">${esc(c.notice || "")}</p>`;
   }

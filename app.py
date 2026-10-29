@@ -74,7 +74,12 @@ LOCALITY_INFO = {
         "label": "Virginia Beach", "availability": "available",
         "source_name": "Virginia Beach Building Permit Applications (ArcGIS Hub)",
     },
-    "chesapeake": {"label": "Chesapeake", "availability": "source_under_review", "source_name": None},
+    "chesapeake": {
+        "label": "Chesapeake", "availability": "available",
+        # no published permit dataset: Accela search results, downloaded by hand one year per file and
+        # imported only when each file's rows equal the count the search page showed
+        "source_name": "Chesapeake Accela Citizen Access (downloaded search results)",
+    },
     "portsmouth": {"label": "Portsmouth", "availability": "source_under_review", "source_name": None},
     "hampton": {"label": "Hampton", "availability": "unavailable", "source_name": None},
     "suffolk": {"label": "Suffolk", "availability": "unavailable", "source_name": None},
@@ -939,8 +944,9 @@ def filing_detail(pln_id: str):
 
 
 CASE_NOTICE = ("Stages and actions are the city's own published record (Development Tracking); action codes are "
-               "labelled from the layer's own coded domain. Chesapeake publishes no building permits, so no case is "
-               "linked to construction. The city's free-text notes are not shown (they can name private individuals).")
+               "labelled from the layer's own coded domain. Permits on the same parcels are candidates from Accela "
+               "search results downloaded for the dates shown, not confirmed links to this case. The city's "
+               "free-text notes are not shown (they can name private individuals).")
 RECORD_NOTICE = ("Development plans and right-of-way permits as the city publishes them. They are not building permits "
                  "and are not counted as permits. Names of private individuals are not shown.")
 
@@ -1014,6 +1020,17 @@ def case_detail(case_id: str):
         out["development_records"] = [chesapeake_records.public_record(dict(x)) for x in conn.execute(
             "SELECT DISTINCT d.* FROM development_records_effective d, json_each(d.gpins_json) g "
             "WHERE g.value IN (SELECT value FROM json_each(?)) ORDER BY d.submitted_date LIMIT 50", (r["gpins_json"],))]
+        # same-parcel permits since the final action (else since the application): candidates, not confirmed links
+        since = r["final_date"] or r["applied_date"]
+        out["permits_since"] = since
+        out["permits_on_site"] = [dict(x) for x in conn.execute(
+            "SELECT DISTINCT p.id AS permit_id, p.source_permit_id, p.permit_type, p.applied_date, p.status "
+            "FROM json_each(?) g JOIN permit_parcel_effective pp ON pp.display_gpin = g.value "
+            "JOIN permits p ON p.id = pp.permit_id WHERE p.locality = ? AND (? IS NULL OR p.applied_date >= ?) "
+            "ORDER BY p.applied_date LIMIT 50", (r["gpins_json"], r["locality"], since, since))] if out["gpins"] else []
+        permit_runs = conn.execute("SELECT MIN(since_date), MAX(completed_at) FROM ingestion_runs WHERE locality = ? "
+                                   "AND status = 'success'", (r["locality"],)).fetchone()
+        out["permits_observed"] = {"from": permit_runs[0], "to": permit_runs[1]} if permit_runs[0] else None
         out["geometry"] = json.loads(r["geom_geojson"]) if r["geom_geojson"] else None
         out["site_constraints"] = constraints_mod.public_constraints(conn, out["gpins"])
         out["data_as_of"] = quality.data_as_of(conn)

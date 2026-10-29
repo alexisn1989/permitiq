@@ -223,7 +223,7 @@ def test_constraint_tagging_only_measures_its_own_locality(env, monkeypatch):
 def test_case_and_record_routes(loaded):
     r = client.get("/api/land-use/cases").json()
     assert {c["case_id"] for c in r["cases"]} == {"PLN-REZ-2025-001", "PLN-USE-2025-002"}  # legacy hidden by default
-    assert r["load"]["source"] == "ches_cases" and "no building permits" in r["notice"]
+    assert r["load"]["source"] == "ches_cases" and "candidates" in r["notice"]
     assert len(client.get("/api/land-use/cases?include_legacy=true").json()["cases"]) == 3
     assert [c["case_id"] for c in client.get("/api/land-use/cases?stage=withdrawn").json()["cases"]] == \
         ["PLN-USE-2025-002"]
@@ -255,7 +255,7 @@ def test_case_html_escapes_and_withholds(loaded):
                          capture_output=True, text=True, check=True).stdout
     assert "Withdrawn" in out and "The project name is an individual — name not shown" in out
     assert "<img" not in out and 'href="javascript' not in out and "Jane Q Public" not in out
-    assert "no building permits" in out
+    assert "No permit data loaded for this city." in out and "candidates" in out
 
 
 def test_report_csvs_withhold_names(loaded, tmp_path):

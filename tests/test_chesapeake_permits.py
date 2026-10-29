@@ -216,3 +216,19 @@ def test_export_address_in_the_geocoders_form():
     assert _split_address_for_batch(a) == ("1234 N EXAMPLE BLVD", "Chesapeake", "VA", "23320")
     assert CP.street_parts(a) == CP.street_parts("1234 N EXAMPLE BLVD CHESAPEAKE VA 23320") == (1234, "N EXAMPLE BLVD")
     assert CP.standard_address("LOT 5 EXAMPLE RD") == "LOT 5 EXAMPLE RD" and CP.standard_address("") is None
+
+
+def test_case_lists_same_parcel_permits_since_its_final_action(matched, tmp_path, monkeypatch):
+    import test_chesapeake as TC
+    from test_land_use import client
+    _ches_parcels(matched)
+    monkeypatch.setattr(TC.load_s, "fetch_json", TC._service(TC.DATA))
+    assert TC.load_s.main(["--source", "ches_cases"]) == 0      # case parcel 0001000000010, final 2025-07-15
+    f = _write(tmp_path, "a.csv", [_row("09/01/2026", "BLD-RES-2026-00011").replace("100 EXAMPLE RD", "3853 SHORE DR"),
+                                   _row("06/01/2025", "BLD-RES-2025-00012").replace("100 EXAMPLE RD", "3853 SHORE DR")])
+    assert imp.main(["--file", str(f), "--start", "2025-06-01", "--end", "2026-09-30", "--page-count", "2"]) == 0
+    assert match(matched, "--locality", "chesapeake") == 0
+    d = client.get("/api/land-use/cases/PLN-REZ-2025-001").json()
+    assert d["permits_since"] == "2025-07-15"
+    assert [x["source_permit_id"] for x in d["permits_on_site"]] == ["BLD-RES-2026-00011"]  # the earlier one is before
+    assert d["permits_observed"]["from"] == "2025-06-01"
