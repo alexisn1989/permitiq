@@ -1,5 +1,7 @@
 """Match Virginia Beach permits and land-use decision addresses to parcels of
-the active parcel load (Stage 3). Rules: ingest/parcels.py.
+the active parcel load (Stage 3). Rules: ingest/parcels.py. --locality chesapeake
+matches Chesapeake permits (no parcel number: address, then point) against
+Chesapeake parcels only.
 
 Only rows whose match is not fresh are (re)matched (--all: every row);
 freshness is the permit_parcel_effective / decision_parcel_effective views,
@@ -40,6 +42,13 @@ class _DryRun(Exception):
 
 
 load_index = P.load_index  # kept here for callers and tests that use the script's name
+_PERMIT_UPSERT = """INSERT INTO permit_parcel (permit_id, load_id, method, gpin, alt_gpin, disputed, gpin_point_agree,
+               tagged_lat, tagged_lng, tagged_gpin_raw, match_fp, matched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(permit_id) DO UPDATE SET load_id = excluded.load_id, method = excluded.method,
+               gpin = excluded.gpin, alt_gpin = excluded.alt_gpin, disputed = excluded.disputed,
+               gpin_point_agree = excluded.gpin_point_agree, tagged_lat = excluded.tagged_lat,
+               tagged_lng = excluded.tagged_lng, tagged_gpin_raw = excluded.tagged_gpin_raw,
+               match_fp = excluded.match_fp, matched_at = excluded.matched_at"""
 
 
 def match_permits(conn, index, load_id, everything, ts) -> Counter:
@@ -56,14 +65,30 @@ def match_permits(conn, index, load_id, everything, ts) -> Counter:
         fp = P.fingerprint("permit", load_id, r["gpin_raw"], r["lat"], r["lng"], m["method"], m["gpin"], m["alt_gpin"])
         rows.append((r["id"], load_id, m["method"], m["gpin"], m["alt_gpin"], m["disputed"], m["gpin_point_agree"],
                      r["lat"], r["lng"], r["gpin_raw"], fp, ts))
-    conn.executemany(
-        """INSERT INTO permit_parcel (permit_id, load_id, method, gpin, alt_gpin, disputed, gpin_point_agree,
-               tagged_lat, tagged_lng, tagged_gpin_raw, match_fp, matched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(permit_id) DO UPDATE SET load_id = excluded.load_id, method = excluded.method,
-               gpin = excluded.gpin, alt_gpin = excluded.alt_gpin, disputed = excluded.disputed,
-               gpin_point_agree = excluded.gpin_point_agree, tagged_lat = excluded.tagged_lat,
-               tagged_lng = excluded.tagged_lng, tagged_gpin_raw = excluded.tagged_gpin_raw,
-               match_fp = excluded.match_fp, matched_at = excluded.matched_at""", rows)
+    conn.executemany(_PERMIT_UPSERT, rows)
+    out["matched_rows"] = len(rows)
+    return out
+
+
+def match_city_permits(conn, index, load_id, locality, everything, ts) -> Counter:
+    """Permits of a city whose records carry no parcel number (Chesapeake): exact
+    address, then geocoded point, against that city's own parcel load only."""
+    from ingest.chesapeake_permits import street_parts
+    todo = conn.execute(
+        "SELECT p.id, p.lat, p.lng, p.address FROM permits p JOIN permit_parcel_effective e ON e.permit_id = p.id "
+        "WHERE p.locality = ? AND (e.fresh = 0 OR ?)", (locality, int(everything))).fetchall()
+    out: Counter = Counter()
+    rows = []
+    for r in todo:
+        house, street = street_parts(r["address"])
+        m = P.match_permit_address(index, house, street, r["lat"], r["lng"])
+        out[m["method"]] += 1
+        out["disputed"] += m["disputed"]
+        fp = P.fingerprint("permit_address", load_id, house, street, r["lat"], r["lng"], m["method"], m["gpin"],
+                           m["alt_gpin"])
+        rows.append((r["id"], load_id, m["method"], m["gpin"], m["alt_gpin"], m["disputed"], m["gpin_point_agree"],
+                     r["lat"], r["lng"], None, fp, ts))
+    conn.executemany(_PERMIT_UPSERT, rows)
     out["matched_rows"] = len(rows)
     return out
 
@@ -134,13 +159,16 @@ def reconcile_decisions(conn) -> Counter:
     return out
 
 
-def write_review(conn, path: Path) -> int:
+def write_review(conn, path: Path, locality: str = "virginia_beach") -> int:
     rows = [("permit", str(r["id"]), r["method"], r["gpin"], r["alt_gpin"],
              f"{r['source_permit_id']} {r['address']} raw GPIN {r['gpin_raw']!r} at ({r['lat']}, {r['lng']})")
             for r in conn.execute(
                 "SELECT p.id, p.source_permit_id, p.address, p.lat, p.lng, json_extract(p.raw_json, '$.GPIN') AS gpin_raw, "
                 "x.method, x.gpin, x.alt_gpin FROM permit_parcel_effective e JOIN permit_parcel x ON x.permit_id = e.permit_id "
-                "JOIN permits p ON p.id = e.permit_id WHERE e.fresh = 1 AND e.disputed = 1 AND e.review_verdict IS NULL")]
+                "JOIN permits p ON p.id = e.permit_id WHERE e.fresh = 1 AND e.disputed = 1 AND e.review_verdict IS NULL "
+                "AND p.locality = ?", (locality,))]
+    if locality != "virginia_beach":  # decisions are Virginia Beach's
+        return _write_rows(path, rows)
     rows += [("decision", f"{r['decision_key']}#{r['seq']}", r["method"], r["gpin"], r["alt_gpin"],
               f"{r['raw_text']} gpin10={r['gpin10']} at ({r['lat']}, {r['lng']})")
              for r in conn.execute(
@@ -159,6 +187,10 @@ def write_review(conn, path: Path) -> int:
         rows.append(("decision_set", r["decision_key"], "cross_row", r["street_parcels"], r["gpin_parcels"],
                      f"street-row parcels {r['street_parcels']} vs printed-GPIN parcels {r['gpin_parcels']}; "
                      f"rows: {r['rows_text']}"))
+    return _write_rows(path, rows)
+
+
+def _write_rows(path: Path, rows: list) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -172,8 +204,11 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--reports-dir", type=Path, default=BASE / "reports")
+    p.add_argument("--locality", default="virginia_beach", choices=("virginia_beach", "chesapeake"))
     args = p.parse_args(argv)
     ts = db_module.now_iso()
+    if args.locality != "virginia_beach":
+        return _main_city(args, ts)
     try:
         with db_module.db() as conn:
             load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 "
@@ -197,6 +232,35 @@ def main(argv=None) -> int:
                 raise _DryRun
             n = write_review(conn, args.reports_dir / "parcel_review.csv")
             print(f"0 rows unmatched; {n} disputed match(es) await review -> {args.reports_dir / 'parcel_review.csv'}")
+    except _DryRun:
+        print("--dry-run: rolled back, nothing written")
+    return 0
+
+
+def _main_city(args, ts) -> int:
+    """A city without parcel numbers on its permits: its own parcel load, its own
+    permits, its own review file. Virginia Beach rows are never read or written."""
+    try:
+        with db_module.db() as conn:
+            load = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?",
+                                (args.locality,)).fetchone()
+            if load is None:
+                print(f"[FATAL] no active {args.locality} parcel load: run scripts/load_parcels.py --locality "
+                      f"{args.locality}", file=sys.stderr)
+                return 1
+            index = load_index(conn, load["load_id"])
+            print(f"{args.locality} parcel load {load['load_id']}: {len(index.rows)} parcels")
+            pm = match_city_permits(conn, index, load["load_id"], args.locality, args.all, ts)
+            print(f"permits:   {dict(sorted(pm.items()))}")
+            untagged = conn.execute("SELECT COUNT(*) FROM permit_parcel_effective e JOIN permits p ON p.id = e.permit_id "
+                                    "WHERE p.locality = ? AND e.fresh = 0", (args.locality,)).fetchone()[0]
+            if untagged:
+                raise SystemExit(f"[FATAL] {untagged} row(s) still unmatched -- rolled back")
+            if args.dry_run:
+                raise _DryRun
+            path = args.reports_dir / f"parcel_review_{args.locality}.csv"
+            n = write_review(conn, path, args.locality)
+            print(f"0 rows unmatched; {n} disputed match(es) await review -> {path}")
     except _DryRun:
         print("--dry-run: rolled back, nothing written")
     return 0

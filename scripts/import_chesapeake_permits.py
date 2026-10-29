@@ -123,10 +123,18 @@ def main(argv=None) -> int:
         return 0
     with db_module.db() as conn:
         run_id = start_ingestion_run(conn, CP.LOCALITY, summary["span"][0])
+        before = dict(conn.execute("SELECT source_permit_id, address FROM permits WHERE locality = ?", (CP.LOCALITY,)))
         counts = upsert_permits(conn, permits)
+        # the address is the parcel match's evidence: a changed address clears the match (reads untagged)
+        moved = [x.source_permit_id for x in permits
+                 if x.source_permit_id in before and before[x.source_permit_id] != x.address]
+        conn.executemany("DELETE FROM permit_parcel WHERE permit_id = (SELECT id FROM permits WHERE locality = ? "
+                         "AND source_permit_id = ?)", [(CP.LOCALITY, k) for k in moved])
+        counts["address_changed"] = len(moved)
         finish_ingestion_run(conn, run_id, "success", fetched_count=summary["rows"], counts=counts,
                              error_message=f"accela download {summary['span'][0]}..{summary['span'][1]}")
-    print(f"ingestion run {run_id}: {counts}. Geocode next: python run_ingest.py --geocode-only")
+    print(f"ingestion run {run_id}: {counts}. Next: python run_ingest.py --geocode-only, then "
+          "python scripts/match_parcels.py --locality chesapeake")
     return 0
 
 

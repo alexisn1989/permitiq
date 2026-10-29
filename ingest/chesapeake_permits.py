@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import date, datetime
 
 from ingest import lead_facts
@@ -49,6 +50,18 @@ STATUS_BUCKET_MAP = {
     "Provisional Approval": "active_pending",
     "Model Approved": "other", "In Service": "other", "Temp CO": "other", "Closed - Incomplete": "other",
 }
+
+
+_CITY_TAIL = re.compile(r"\s+CHESAPEAKE\s+VA(?:\s+\d{5}(?:-\d{4})?)?\s*$", re.I)
+
+
+def street_parts(address: str | None) -> tuple[int | None, str | None]:
+    """(house, normalized street) of an export address ("1234 EXAMPLE RD
+    CHESAPEAKE VA 23320"), the city tail removed; (None, None) if unparsed."""
+    if not address:
+        return None, None
+    from ingest.parcels import address_parts  # local import: parcels pulls in shapely
+    return address_parts(_CITY_TAIL.sub("", address.strip()))
 
 
 class ExportError(Exception):

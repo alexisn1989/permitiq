@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -43,7 +43,7 @@ MATCH_TIERS = ("gpin", "address_exact", "same_parcel", "address_range", "manual"
 PARCEL_FLOOD_CLASSES = ("sfha_v", "sfha_a", "shaded_x", "matched_non_sfha",
                         "screening_sliver", "screening_partial_coverage", "no_polygon")
 PERMIT_PARCEL_METHODS = ("gpin14", "gpin10_unique", "point_in_parcel", "ambiguous", "no_parcel",
-                         "not_geocoded_no_gpin")
+                         "not_geocoded_no_gpin", "address_exact")
 DECISION_PARCEL_METHODS = ("gpin10_unique", "address_exact", "point_in_parcel", "ambiguous", "no_parcel")
 PARCEL_REVIEW_VERDICTS = ("gpin_correct", "point_correct", "unresolvable")
 # Decision-level verdicts for a cross-row conflict (a street row's parcel is
@@ -624,7 +624,8 @@ _SCHEMA_V5_STATEMENTS = [
         permit_id        INTEGER PRIMARY KEY REFERENCES permits(id),
         load_id          INTEGER NOT NULL REFERENCES parcel_loads(load_id),
         method           TEXT NOT NULL CHECK (method IN
-            ('gpin14','gpin10_unique','point_in_parcel','ambiguous','no_parcel','not_geocoded_no_gpin')),
+            ('gpin14','gpin10_unique','point_in_parcel','ambiguous','no_parcel','not_geocoded_no_gpin',
+             'address_exact')),
         gpin             TEXT,
         alt_gpin         TEXT,
         disputed         INTEGER NOT NULL DEFAULT 0 CHECK (disputed IN (0, 1)),
@@ -1764,6 +1765,44 @@ _SCHEMA_V14_STATEMENTS = [
 ]
 
 
+# Schema v15: Chesapeake permits carry no parcel number, so a permit may match its
+# parcel by exact (house, street) -- method 'address_exact', as decisions already
+# do. permit_parcel is copied into a table whose CHECK allows it; every row is
+# kept as is, and permit_parcel_effective is recreated from its own current SQL.
+_PERMIT_PARCEL_COLUMNS = ("permit_id, load_id, method, gpin, alt_gpin, disputed, gpin_point_agree, tagged_lat, "
+                          "tagged_lng, tagged_gpin_raw, match_fp, matched_at")
+
+
+def _schema_v15(conn) -> None:
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'permit_parcel'").fetchone()[0]
+    if "address_exact" in sql:
+        return
+    view = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'permit_parcel_effective'"
+                        ).fetchone()
+    before = conn.execute("SELECT COUNT(*) FROM permit_parcel").fetchone()[0]
+    conn.execute("DROP VIEW IF EXISTS permit_parcel_effective")
+    old_check = "'not_geocoded_no_gpin'))"
+    if old_check not in sql:
+        raise RuntimeError("permit_parcel's method CHECK is not the expected v3 form; aborting migration")
+    conn.execute(sql.replace("CREATE TABLE permit_parcel", "CREATE TABLE permit_parcel_v15", 1)
+                 .replace(old_check, "'not_geocoded_no_gpin','address_exact'))", 1))
+    conn.execute(f"INSERT INTO permit_parcel_v15 ({_PERMIT_PARCEL_COLUMNS}) "
+                 f"SELECT {_PERMIT_PARCEL_COLUMNS} FROM permit_parcel")
+    after = conn.execute("SELECT COUNT(*) FROM permit_parcel_v15").fetchone()[0]
+    if after != before:
+        raise RuntimeError(f"permit_parcel copy lost rows ({before} -> {after}); aborting migration")
+    conn.execute("DROP TABLE permit_parcel")
+    # other views (filing_status ...) read permit_parcel_effective, which is recreated just below; the
+    # legacy rename does not re-check every view meanwhile
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        conn.execute("ALTER TABLE permit_parcel_v15 RENAME TO permit_parcel")
+    finally:
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+    if view is not None:
+        conn.execute(view[0])
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -1829,6 +1868,8 @@ def init_db(db_path: Path | str | None = None) -> None:
         if current_version < 14:
             for statement in _SCHEMA_V14_STATEMENTS:
                 conn.execute(statement)
+        if current_version < 15:
+            _schema_v15(conn)
         # data correction, idempotent: Virginia Beach's NFHL id (see flood_locality_dfirm above)
         conn.execute("UPDATE flood_locality_dfirm SET dfirm_id = '515531' "
                      "WHERE locality = 'virginia_beach' AND dfirm_id = '51810C'")

@@ -237,6 +237,36 @@ def match_permit(index: ParcelIndex, raw_gpin, lat, lng) -> dict:
     return {**out, "method": "ambiguous" if len(pts) > 1 else "no_parcel"}
 
 
+def match_permit_address(index: ParcelIndex, house, street_norm, lat, lng) -> dict:
+    """A permit with no parcel number (Chesapeake): its exact address and its
+    geocoded point, against one city's parcel index only. The address is the
+    record's own evidence and the point a geocode estimate, so when both name a
+    single parcel and they differ, the address parcel is kept, the point parcel
+    is the alternative, and the match is disputed. Several parcels at one
+    address (condominiums) stay ambiguous unless the point picks one of them."""
+    pts = index.at_point(lat, lng)
+    point = pts[0] if len(pts) == 1 else None
+    cands = index.by_address.get((house, street_norm), []) if house is not None and street_norm else []
+    out = {"gpin": None, "alt_gpin": None, "disputed": 0, "gpin_point_agree": None}
+    if len(cands) == 1:
+        addr = cands[0]
+        if point is None:
+            return {**out, "method": "address_exact", "gpin": addr}
+        if point == addr:
+            return {**out, "method": "address_exact", "gpin": addr, "gpin_point_agree": 1}
+        return {**out, "method": "address_exact", "gpin": addr, "alt_gpin": point, "disputed": 1,
+                "gpin_point_agree": 0}
+    if len(cands) > 1:
+        if point is not None and point in cands:
+            return {**out, "method": "point_in_parcel", "gpin": point, "gpin_point_agree": 1}
+        return {**out, "method": "ambiguous"}
+    if lat is None or lng is None:
+        return {**out, "method": "not_geocoded_no_gpin"}
+    if point is not None:
+        return {**out, "method": "point_in_parcel", "gpin": point}
+    return {**out, "method": "ambiguous" if len(pts) > 1 else "no_parcel"}
+
+
 def match_decision_address(index: ParcelIndex, gpin10, house_from, house_to, street_norm, lat, lng) -> dict:
     evidence = []  # (method, gpin) in priority order; None gpin = ambiguous evidence
     ambiguous = False
