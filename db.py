@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -1807,7 +1807,7 @@ def _schema_v15(conn) -> None:
 # case record stays authoritative: votes are shown and cross-checked, never used to set
 # a case stage. Council members are public officials; no email is stored.
 COUNCIL_VOTE_RESULTS = ("passed", "failed", "tabled", "withdrawn", "deferred", "denied")
-COUNCIL_MEMBER_VOTES = ("yes", "no", "abstain", "absent")
+COUNCIL_MEMBER_VOTES = ("yes", "no", "abstain", "absent", "unknown")
 MOTION_KINDS = ("approve", "deny", "continue", "other")
 _SCHEMA_V16_STATEMENTS = [
     """
@@ -1929,6 +1929,29 @@ def _schema_v21(conn) -> None:
         conn.execute(view[0])
 
 
+# Schema v25: Newport News' export records some member votes as "unknown" (VoteIQ could not tell); kept as such,
+# never read as absent or yes. council_member_votes is copied row for row into a table whose CHECK allows it.
+def _schema_v25(conn) -> None:
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'council_member_votes'").fetchone()[0]
+    if "'unknown'" in sql:
+        return
+    old_check = "'absent'))"
+    if old_check not in sql:
+        raise RuntimeError("council_member_votes' vote CHECK is not the expected v16 form; aborting migration")
+    before = conn.execute("SELECT COUNT(*) FROM council_member_votes").fetchone()[0]
+    conn.execute(sql.replace("CREATE TABLE council_member_votes", "CREATE TABLE council_member_votes_v25", 1)
+                 .replace(old_check, "'absent','unknown'))", 1))
+    conn.execute("INSERT INTO council_member_votes_v25 SELECT * FROM council_member_votes")
+    if conn.execute("SELECT COUNT(*) FROM council_member_votes_v25").fetchone()[0] != before:
+        raise RuntimeError("council_member_votes copy lost rows; aborting migration")
+    conn.execute("DROP TABLE council_member_votes")
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        conn.execute("ALTER TABLE council_member_votes_v25 RENAME TO council_member_votes")
+    finally:
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+
+
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
 
@@ -2010,6 +2033,8 @@ def init_db(db_path: Path | str | None = None) -> None:
             conn.execute("INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('suffolk', '510156')")
         if current_version < 21 and current_version >= 16:
             _schema_v21(conn)
+        if current_version < 25 and current_version >= 16:
+            _schema_v25(conn)
         if current_version < 24:
             # Newport News' NFHL id, confirmed with two point queries on the FEMA service (2026-10-30)
             conn.execute("INSERT OR IGNORE INTO flood_locality_dfirm (locality, dfirm_id) VALUES ('newport_news', '510103')")

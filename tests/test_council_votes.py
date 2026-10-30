@@ -335,3 +335,30 @@ def test_hampton_layout():
     assert CV.motion_kind("Defer Use Permits", "hampton") == "continue"
     assert CV.motion_kind("Defer Appointment", "hampton") == "other"  # not a land-use continuance
     assert CV.LAYOUTS["hampton"]["files"]["members"][1] == CV.MEMBER_COLUMNS  # emails read, never stored
+
+
+def test_newport_news_roll_from_member_rows_unknown_kept(env, tmp_path):
+    import csv
+    def w(name, cols, rows):
+        with (tmp_path / name).open("w", newline="", encoding="utf-8") as fh:
+            wr = csv.DictWriter(fh, fieldnames=cols)
+            wr.writeheader()
+            wr.writerows(rows)
+    votes = [("1", "adoption of the ordinance", "Carried", "2-0"), ("2", "to close the public hearing", "DEFEATED.", "0-2")]
+    w("newport_news_council_votes.csv", CV.NN_VOTE_COLUMNS, [
+        {"id": i, "meeting_date": "Mar 12 2025", "title": "x", "agenda_item": i, "motion": m, "moved_by": "", "seconded_by": "",
+         "result": res, "vote_count": vc, "votes_json": "{}", "category": "substantive", "scraped_at": "x"} for i, m, res, vc in votes])
+    who = {"1": {"Alpha": "yes", "Bravo": "yes", "Charlie": "unknown"}, "2": {"Alpha": "no", "Bravo": "no", "Charlie": "absent"}}
+    w("newport_news_council_member_votes.csv", CV.NN_MEMBER_VOTE_COLUMNS, [
+        {"id": f"{v}-{k}", "vote_id": v, "meeting_date": "Mar 12 2025", "member_name": k, "vote": x, "agenda_item": v,
+         "title": "x", "result": "", "category": ""} for v, d in who.items() for k, x in d.items()])
+    w("newport_news_council_members.csv", CV.MEMBER_COLUMNS, [])
+    w("newport_news_upcoming_agenda.csv", CV.PT_AGENDA_COLUMNS, [])
+    assert lcv.main(["--locality", "newport_news", "--dir", str(tmp_path), "--reports-dir", str(env["reports"])]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["vote_id"]: dict(r) for r in conn.execute("SELECT * FROM council_votes_effective")}
+        unknown = conn.execute("SELECT COUNT(*) FROM council_member_votes WHERE vote = 'unknown'").fetchone()[0]
+    assert (rows["1"]["result"], rows["1"]["motion_kind"], rows["1"]["yes"], rows["1"]["meeting_date"]) == \
+        ("passed", "approve", 2, "2025-03-12")
+    assert (rows["2"]["result"], rows["2"]["motion_kind"], rows["2"]["no"], rows["2"]["tally_mismatch"]) == ("failed", "other", 2, 0)
+    assert unknown == 1  # kept as published, never read as absent or yes

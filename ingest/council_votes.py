@@ -112,6 +112,28 @@ LAYOUTS["hampton"] = {
                 "approve with eleven conditions"},
     "deny": {"deny"}, "continue": {"defer", "deferred", "defer use permits"},
     "aliases": {}, "meeting_field": "meeting_id"}
+# Newport News (VoteIQ export 2026-10-30): no meeting id; each vote's votes_json is empty, so the member rows are
+# the roll call; results "Carried" / "DEFEATED." (renamed passed / failed); some member votes "unknown";
+# dates "Mar 12 2025"; motions written as phrases -- only the plainly approving ones below count as approve.
+NN_VOTE_COLUMNS = ("id", "meeting_date", "title", "agenda_item", "motion", "moved_by", "seconded_by", "result",
+                   "vote_count", "votes_json", "category", "scraped_at")
+NN_MEMBER_VOTE_COLUMNS = ("id", "vote_id", "meeting_date", "member_name", "vote", "agenda_item", "title", "result",
+                          "category")
+_NN_APPROVE = {"adoption of the ordinance", "adoption of the ordinance.", "approval of the resolution",
+               "approval of the resolution.", "adoption of the resolution", "adoption of the resolution.",
+               "to approve resolution", "to approve the resolution", "to adopt the ordinance", "to adopt ordinance",
+               "adoption of ordinance", "approve resolution", "approve the resolution", "approval of resolution",
+               "moved to adopt ordinance", "motion to approve the resolution", "motion to adopt ordinance",
+               "motion to adopt the ordinance", "motion to approve the ordinance", "adopt the ordinance",
+               "adopt ordinance", "approval of the amended resolution"}
+LAYOUTS["newport_news"] = {
+    "files": {"votes": ("newport_news_council_votes.csv", NN_VOTE_COLUMNS),
+              "member_votes": ("newport_news_council_member_votes.csv", NN_MEMBER_VOTE_COLUMNS),
+              "members": ("newport_news_council_members.csv", MEMBER_COLUMNS),
+              "agenda": ("newport_news_upcoming_agenda.csv", PT_AGENDA_COLUMNS)},
+    "source": "VoteIQ export of Newport News City Council meetings (roll call from member rows)",
+    "approve": _NN_APPROVE, "deny": set(), "continue": set(), "aliases": {}, "meeting_field": None,
+    "roll_from_members": True, "result_map": {"Carried": "passed", "DEFEATED.": "failed"}}
 EXCEPTIONS_ONLY = {k for k, v in LAYOUTS.items() if v.get("exceptions_only")}
 
 
@@ -150,7 +172,7 @@ def motion_kind(motion: str | None, locality: str = "chesapeake") -> str:
 
 
 def meeting_date(raw: str | None) -> str | None:
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):  # Chesapeake, Norfolk, Portsmouth, Suffolk
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d", "%b %d %Y"):  # Chesapeake, Norfolk, Portsmouth, Suffolk
         try:
             return datetime.strptime((raw or "").strip(), fmt).date().isoformat()
         except ValueError:
@@ -216,7 +238,9 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
     raw.setdefault("members", [])
     problems = []
     votes = {}
+    result_map = lay.get("result_map", {})
     for r in raw["votes"]:
+        r["result"] = result_map.get(r["result"], r["result"])
         if r["id"] in votes:
             problems.append(f"vote id {r['id']} twice")
         if r["result"] not in ("passed", "failed", "tabled", "withdrawn", "deferred", "denied"):
@@ -232,7 +256,7 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
         if v is None:
             problems.append(f"member vote {m['id']} for unknown vote {m['vote_id']}")
             continue
-        if m["vote"] not in ("yes", "no", "abstain", "absent"):
+        if m["vote"] not in ("yes", "no", "abstain", "absent", "unknown"):
             problems.append(f"member vote {m['id']}: vote {m['vote']!r} not seen before")
         name = member(m["member_name"], locality)
         if name in v["members"]:
@@ -240,6 +264,8 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
         v["members"][name] = (m["vote"], m["member_name"])
     conflicts = set()
     for vid, v in votes.items():
+        if lay.get("roll_from_members") and not v["listed"]:
+            continue  # the export leaves votes_json empty: the member rows are the roll call
         if {k: x[0] for k, x in v["members"].items()} != v["listed"]:
             if locality in EXCEPTIONS_ONLY:  # kept as published and flagged (user decision 2026-10-30, Suffolk vote 1061)
                 conflicts.add(vid)
@@ -255,7 +281,8 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
             printed = printed_tally(r["vote_count"])
             tally = {**(printed or {"yes": 0, "no": 0, "abstain": 0}), "absent": tally["absent"]}
         out_votes.append({
-            "vote_id": vid, "clip_id": r[lay["meeting_field"]] or None, "meeting_date": meeting_date(r["meeting_date"]),
+            "vote_id": vid, "clip_id": (r[lay["meeting_field"]] or None) if lay["meeting_field"] else None,
+            "meeting_date": meeting_date(r["meeting_date"]),
             "agenda_item": r["agenda_item"] or None, "title": r["title"] or None, "motion": r["motion"] or None,
             "motion_kind": motion_kind(r["motion"], locality), "moved_by": r.get("moved_by") or None,
             "seconded_by": r.get("seconded_by") or None, "result": r["result"], **tally,
