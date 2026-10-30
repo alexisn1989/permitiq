@@ -977,10 +977,17 @@ def _record_load(conn, source: str) -> Optional[dict]:
     return dict(load) if load else None
 
 
+# who published each city's assessed values (parcel_values_effective), for the card's source line
+VALUE_SOURCES = {
+    "chesapeake": "HRGEO, HRSD's regional republication of the city's parcel data",
+    "norfolk": "the City of Norfolk Real Estate Assessor's roll (data.norfolk.gov)",
+}
+
+
 def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
     """Parcels of the active loads by their exact parcel id (already linked; no GPIN10 fallback), with the
-    assessed value of the same city's active value load when there is one (tax year unconfirmed)."""
-    return [dict(r) for r in conn.execute(
+    assessed value of the same city's active value load when there is one, and who published it."""
+    rows = [dict(r) for r in conn.execute(
         "SELECT p.gpin, l.locality, p.zoning, p.prop_class, p.prop_address, ROUND(p.tax_area_sqft / 43560.0, 4) AS acreage, "
         "(p.minx + p.maxx) / 2 AS lng, (p.miny + p.maxy) / 2 AS lat, pf.parcel_flood_class, pf.share_sfha_v, "
         "pf.share_sfha_a, pf.share_shaded_x, pv.total_value, pv.land_value, pv.improvement_value, "
@@ -990,6 +997,9 @@ def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
         "LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin "
         "LEFT JOIN parcel_values_effective pv ON pv.gpin = p.gpin AND pv.locality = l.locality "
         "ORDER BY p.gpin LIMIT 25", (json.dumps(gpins),))]
+    for r in rows:
+        r["value_source"] = VALUE_SOURCES.get(r["locality"]) if r["total_value"] is not None else None
+    return rows
 
 
 @app.get("/api/land-use/cases")

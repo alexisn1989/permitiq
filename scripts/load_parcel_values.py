@@ -1,14 +1,20 @@
-"""Load assessed values per parcel from the HRGEO regional parcel layer (geo.hrsd.com),
-which HRSD builds from each locality's published GIS. Read complete or not at all
-(count and OBJECTID set must match, ingest/arcgis.py); only the value fields are
-requested -- the layer also holds owner names and mailing addresses, which never
-reach this script. One active load per locality; an identical re-read changes nothing.
+"""Load assessed values per parcel. Two kinds of source, both read complete or not at all,
+both requested with value fields only (each also holds owner names; they never reach
+this script). One active load per locality; an identical re-read changes nothing.
 
-The source does not state a tax year: every row is stored with tax_year NULL and
-tax_year_status 'unconfirmed', and no tax bill is computed from it.
+* Chesapeake -- the HRGEO regional parcel layer (geo.hrsd.com), HRSD's republication of
+  city GIS. No tax year is stated: rows are stored with tax_year NULL / 'unconfirmed'.
+* Norfolk -- the city Real Estate Assessor's own roll on data.norfolk.gov ("Property
+  Assessment and Sales - FY27", ProVal, updated daily). One row per building
+  ("extension") repeating its account's value; condo units share a GPIN with their own
+  account. Values are taken once per account (parcel_id; an account whose rows disagree
+  stops the run) and summed per GPIN. The roll's effective date (July 1, 2026) fixes the
+  tax year: FY2027, stored 'confirmed'.
+
+No tax bill is computed from either.
 
 Usage (after scripts/migrate_db.py, schema v26):
-  python scripts/load_parcel_values.py --locality chesapeake [--dry-run]
+  python scripts/load_parcel_values.py --locality chesapeake|norfolk [--dry-run]
 """
 
 from __future__ import annotations
@@ -31,6 +37,11 @@ fetch_json = fetch_json_retry  # indirection so tests can stub the network
 
 LAYER = "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0"
 FIPS = {"chesapeake": "550"}  # HRGEO's 3-digit county code; its PARCELID is Chesapeake's MAP_PARCEL
+ROLLS = {"norfolk": "https://data.norfolk.gov/resource/qva7-tzrf.json"}  # Property Assessment and Sales - FY27
+ROLL_FIELDS = ("parcel_id", "gpin", "extension", "current_land_value", "current_improvement_value",
+               "current_total_value", "effective_year")
+ROLL_PAGE = 50000
+LOCALITIES = sorted({*FIPS, *ROLLS})
 FIELDS = ("FIPS", "PARCELID", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
 OUT_FIELDS = "OBJECTID," + ",".join(FIELDS)
 
@@ -74,11 +85,68 @@ def normalize(features: list[dict], stats: Counter) -> tuple[list[dict], str | N
     return [by[k] for k in sorted(by)], newest
 
 
-def content_hash(rows: list[dict]) -> str:
-    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+def _dec(v):
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
-def load(conn, locality: str, dry_run: bool) -> str:
+def read_roll(locality: str, stats: Counter) -> tuple[list[dict], dict]:
+    """The Assessor's roll: every row (count checked), one value per account, summed per GPIN."""
+    url = ROLLS[locality]
+    expected = int(fetch_json(url, {"$select": "count(*)"})[0]["count"])
+    raw: list[dict] = []
+    while True:
+        page = fetch_json(url, {"$select": ",".join(ROLL_FIELDS), "$order": "parcel_id,extension,:id",
+                                "$limit": ROLL_PAGE, "$offset": len(raw)})
+        raw.extend(page)
+        if len(page) < ROLL_PAGE:
+            break
+    if len(raw) != expected:
+        raise arcgis.IncompleteRead(f"{locality} roll: count {expected}, received {len(raw)}")
+    if expected and int(fetch_json(url, {"$select": "count(*)"})[0]["count"]) != expected:
+        raise arcgis.IncompleteRead(f"{locality} roll: row count changed during the read")
+    effective = {r.get("effective_year") for r in raw}
+    if len(effective) != 1 or not next(iter(effective)):
+        raise ValueError(f"{locality} roll: expected one effective date, found {sorted(map(str, effective))}")
+    eff = next(iter(effective))[:10]
+    if eff[5:] != "07-01":
+        raise ValueError(f"{locality} roll: effective date {eff} is not a July 1 fiscal-year start")
+    accounts: dict[str, dict] = {}
+    for r in raw:
+        key = str(r.get("parcel_id") or "")
+        vals = (str(r.get("gpin") or ""), _dec(r.get("current_land_value")),
+                _dec(r.get("current_improvement_value")), _dec(r.get("current_total_value")))
+        prev = accounts.get(key)
+        if prev is None:
+            accounts[key] = {"vals": vals}
+        elif prev["vals"] != vals:
+            raise ValueError(f"{locality} roll: account {key} has rows with different values")
+        else:
+            stats["building_rows_repeating_account"] += 1
+    by: dict[str, dict] = {}
+    for a in accounts.values():
+        gpin, land, impr, total = a["vals"]
+        if not gpin:
+            stats["account_without_gpin"] += 1
+            continue
+        if total is not None and land is not None and abs(land + (impr or 0) - total) >= 1:
+            stats["land_plus_improvement_not_total"] += 1
+        row = by.setdefault(gpin, {"gpin": gpin, "land_value": 0.0, "improvement_value": 0.0, "total_value": 0.0,
+                                   "accounts": 0})
+        row["accounts"] += 1
+        for k, v in (("land_value", land), ("improvement_value", impr), ("total_value", total)):
+            row[k] = None if v is None or row[k] is None else row[k] + v
+    stats["accounts"] = len(accounts)
+    stats["gpins_with_several_accounts"] = sum(1 for r in by.values() if r["accounts"] > 1)
+    rows = [{k: v for k, v in by[g].items() if k != "accounts"} for g in sorted(by)]
+    meta = {"source_url": url, "expected": expected, "received": len(raw), "vintage": eff,
+            "tax_year": int(eff[:4]) + 1, "status": "confirmed"}
+    return rows, meta
+
+
+def read_hrgeo(locality: str, stats: Counter) -> tuple[list[dict], dict]:
     meta = fetch_json(LAYER, {"f": "json"})
     names = {f.get("name", "").upper() for f in meta.get("fields", [])}
     missing = [f for f in FIELDS if f not in names]
@@ -86,15 +154,28 @@ def load(conn, locality: str, dry_run: bool) -> str:
         raise ValueError(f"{locality}: fields {missing} are missing from the source")
     raw = arcgis.fetch_all_by_ids(fetch_json, LAYER, f"FIPS = '{FIPS[locality]}'", out_fields=OUT_FIELDS,
                                   label=f"{locality} values", geometry=False, batch=1000)
-    stats: Counter = Counter()
     rows, vintage = normalize(raw, stats)
+    return rows, {"source_url": LAYER, "expected": len(raw), "received": len(raw), "vintage": vintage,
+                  "tax_year": None, "status": "unconfirmed"}
+
+
+def content_hash(rows: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def load(conn, locality: str, dry_run: bool) -> str:
+    stats: Counter = Counter()
+    rows, src = read_roll(locality, stats) if locality in ROLLS else read_hrgeo(locality, stats)
+    vintage = src["vintage"]
     pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?", (locality,)).fetchone()
     plid = pl["load_id"] if pl else None
     ours = {r["gpin"] for r in conn.execute("SELECT gpin FROM parcels WHERE load_id = ?", (plid,))} if plid else set()
     matched = sum(1 for r in rows if r["gpin"] in ours)
     total = sum(r["total_value"] or 0 for r in rows)
-    h = content_hash(rows)
-    print(f"{locality}: {len(raw)} features -> {len(rows)} parcels; refreshed {vintage}; {dict(sorted(stats.items()))}")
+    h = content_hash([{"tax_year": src["tax_year"]}, *rows])
+    year = f"tax year {src['tax_year']} ({src['status']})" if src["tax_year"] else "tax year unconfirmed"
+    print(f"{locality}: {src['received']} rows -> {len(rows)} parcels; as of {vintage}; {year}; "
+          f"{dict(sorted(stats.items()))}")
     print(f"  total ${total / 1e9:,.2f}B; {matched} of {len(ours)} parcels in the active parcel load have a value"
           + ("" if plid else "  [no active parcel load]"))
     if dry_run:
@@ -109,19 +190,20 @@ def load(conn, locality: str, dry_run: bool) -> str:
         "INSERT INTO parcel_value_loads (locality, source_url, expected_count, received_count, parcels, "
         "matched_parcels, parcel_load_id, content_hash, source_vintage, stats_json, loaded_at, is_active) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,1)",
-        (locality, LAYER, len(raw), len(raw), len(rows), matched, plid, h, vintage, json.dumps(dict(stats)),
-         db_module.now_iso())).lastrowid
+        (locality, src["source_url"], src["expected"], src["received"], len(rows), matched, plid, h, vintage,
+         json.dumps(dict(stats)), db_module.now_iso())).lastrowid
     conn.executemany(
         "INSERT INTO parcel_values (load_id, locality, gpin, land_value, improvement_value, total_value, tax_year, "
-        "tax_year_status) VALUES (?,?,?,?,?,?,NULL,'unconfirmed')",
-        [(load_id, locality, r["gpin"], r["land_value"], r["improvement_value"], r["total_value"]) for r in rows])
+        "tax_year_status) VALUES (?,?,?,?,?,?,?,?)",
+        [(load_id, locality, r["gpin"], r["land_value"], r["improvement_value"], r["total_value"], src["tax_year"],
+          src["status"]) for r in rows])
     print(f"  activated load {load_id}")
     return "loaded"
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Load assessed values per parcel (HRGEO, tax year unconfirmed)")
-    p.add_argument("--locality", required=True, choices=sorted(FIPS))
+    p.add_argument("--locality", required=True, choices=LOCALITIES)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     try:

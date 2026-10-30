@@ -323,10 +323,12 @@
     const money = (v) => (v != null ? `$${esc(fmtNum(v))}` : "–");
     const parcels = (c.parcels || []).map((p) =>
       `<tr><td>${esc(p.gpin)}</td><td>${esc(p.prop_class || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td>${valued.length ? `<td>${p.total_value != null ? `${money(p.total_value)} <span class="muted small">(land ${money(p.land_value)} · improvements ${money(p.improvement_value)})</span>` : '<span class="muted">not published</span>'}</td>` : ""}</tr>`).join("");
-    const vintage = valued.length ? valued[0].value_vintage : null;
-    const valueNote = valued.length
-      ? `<p class="muted small">Assessed values from HRGEO, HRSD's regional republication of the city's parcel data${vintage ? ` (refreshed ${esc(vintage)})` : ""}. Tax year not stated by the source, so no tax bill is shown; the city's assessment record stays authoritative.</p>`
-      : "";
+    const v0 = valued[0] || {};
+    const confirmed = v0.tax_year_status === "confirmed" && v0.tax_year;
+    const valueHead = confirmed ? `Assessed value (FY${esc(v0.tax_year)})` : "Assessed value (tax year unconfirmed)";
+    const valueNote = !valued.length ? "" : confirmed
+      ? `<p class="muted small">Assessed values from ${esc(v0.value_source || "the city")}, FY${esc(v0.tax_year)} (effective ${esc(v0.value_vintage)}); condo units on one parcel are summed. No tax bill is shown.</p>`
+      : `<p class="muted small">Assessed values from ${esc(v0.value_source || "a regional source")}${v0.value_vintage ? ` (refreshed ${esc(v0.value_vintage)})` : ""}. Tax year not stated by the source, so no tax bill is shown; the city's assessment record stays authoritative.</p>`;
     const recs = (c.development_records || []).map((r) =>
       `<li>${esc(r.record_id)} · ${esc(r.record_type || "")} · ${esc(r.status || "")}${r.submitted_date ? ` · submitted ${esc(r.submitted_date)}` : ""}${r.approved_date ? ` · approved ${esc(r.approved_date)}` : ""}</li>`).join("");
     const permits = (c.permits_on_site || []).map((p) =>
@@ -352,7 +354,7 @@
       </section>
       <section class="card">
         <h3>Parcels</h3>
-        ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Class · area</th><th>Flood (screening estimate)</th>${valued.length ? "<th>Assessed value (tax year unconfirmed)</th>" : ""}</tr></thead><tbody>${parcels}</tbody></table>${valueNote}` : '<p class="muted">No parcel linked.</p>'}
+        ${parcels ? `<table class="grid"><thead><tr><th>Parcel</th><th>Class · area</th><th>Flood (screening estimate)</th>${valued.length ? `<th>${valueHead}</th>` : ""}</tr></thead><tbody>${parcels}</tbody></table>${valueNote}` : '<p class="muted">No parcel linked.</p>'}
       </section>
       ${buildCouncilVotesHtml(c)}
       ${buildConstraintsHtml(c.site_constraints)}

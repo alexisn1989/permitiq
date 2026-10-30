@@ -625,6 +625,15 @@ python scripts/tag_parcel_constraints.py --locality norfolk
 - **Read 2026-10-30:** 92,498 features → 92,403 parcels (95 exact duplicate rows collapsed), 92,316 with a value, $47.52B; refreshed 2026-02-27. 92,335 of the 92,708 Chesapeake parcels match by id.
 - **Shown on Chesapeake case cards** as "Assessed value (tax year unconfirmed)", with land and improvements. The source states no tax year, so `tax_year` stays NULL (`tax_year_status = 'unconfirmed'`) and **no tax bill is computed or shown**. Values attach only to the same city's parcels.
 
+### Norfolk assessed values (the Assessor's FY2027 roll)
+
+- **Source:** the City of Norfolk Real Estate Assessor's "Property Assessment and Sales – FY27" on data.norfolk.gov (ProVal, updated daily). `python scripts/load_parcel_values.py --locality norfolk`.
+- **Only value columns are requested** (`parcel_id`, `gpin`, `extension`, land / improvement / total, `effective_year`); owner, grantor and grantee never reach PermitIQ.
+- **One value per tax account:** the roll has one row per building ("extension") repeating its account's value (a shipyard repeats $32.7M on 57 rows), so values are taken once per `parcel_id`, and an account whose rows disagree stops the load. Condo units are separate accounts sharing a GPIN, and are summed per GPIN.
+- **Tax year confirmed:** every row is effective July 1, 2026, i.e. FY2027, stored `tax_year = 2027`, `'confirmed'`. A roll with mixed effective dates is refused.
+- **Read 2026-10-30:** 74,301 rows → 72,454 accounts → 67,396 parcels (27 accounts have no GPIN), $44.72B including exempt property; 67,177 of the 67,286 Norfolk parcels have a value. Two values checked against the roll directly.
+- **HRGEO is a year behind for Norfolk:** all 40 sampled HRGEO Norfolk parcels equal the FY26 roll (effective July 1, 2025); only about 10% equal FY27.
+
 ### Chesapeake City Council votes (VoteIQ export)
 
 ```bash

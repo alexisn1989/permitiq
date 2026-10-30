@@ -102,4 +102,59 @@ def test_case_parcels_show_values_of_the_same_city_only(env, monkeypatch):
 
 def test_card_labels_values_and_shows_no_tax_bill():
     js = (ROOT / "static" / "lead_util.js").read_text()
-    assert "Assessed value (tax year unconfirmed)" in js and "no tax bill is shown" in js
+    assert "Assessed value (tax year unconfirmed)" in js and "No tax bill is shown" in js and "no tax bill is shown" in js
+
+
+ROLL = [  # synthetic Norfolk roll rows: a 3-building account repeats its value; two condo units share a GPIN
+    {"parcel_id": "11605", "gpin": "1448671584", "extension": f"C0{i}", "current_land_value": "897400",
+     "current_improvement_value": "6118200", "current_total_value": "7015600",
+     "effective_year": "2026-07-01T00:00:00.000"} for i in (1, 2, 3)
+] + [
+    {"parcel_id": "312500", "gpin": "1429682282", "extension": "R02", "current_land_value": "50000",
+     "current_improvement_value": "201600", "current_total_value": "251600", "effective_year": "2026-07-01T00:00:00.000"},
+    {"parcel_id": "1776000", "gpin": "1429682282", "extension": "R02", "current_land_value": "40000",
+     "current_improvement_value": "149900", "current_total_value": "189900", "effective_year": "2026-07-01T00:00:00.000"},
+    {"parcel_id": "99", "gpin": None, "extension": "R01", "current_land_value": "1", "current_improvement_value": "1",
+     "current_total_value": "2", "effective_year": "2026-07-01T00:00:00.000"},
+]
+
+
+def _roll(rows, seen):
+    def fetch(url, params=None, **kw):
+        seen.append(params)
+        if params.get("$select") == "count(*)":
+            return [{"count": str(len(rows))}]
+        off, lim = int(params["$offset"]), int(params["$limit"])
+        keep = params["$select"].split(",")
+        return [{k: v for k, v in r.items() if k in keep} for r in rows[off:off + lim]]
+    return fetch
+
+
+def test_norfolk_roll_one_value_per_account_summed_per_gpin_confirmed_fy2027(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(lpv, "fetch_json", _roll(ROLL, seen))
+    monkeypatch.setattr(lpv, "ROLL_PAGE", 2)  # paging is exercised
+    with db_module.db(env["db"]) as conn:
+        _parcels(conn, "norfolk", ["1448671584", "1429682282"])
+    assert lpv.main(["--locality", "norfolk"]) == 0
+    sel = {p["$select"] for p in seen}
+    assert all("owner" not in s_ and "grant" not in s_ for s_ in sel)
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["gpin"]: dict(r) for r in conn.execute("SELECT * FROM parcel_values_effective")}
+        stats = json.loads(conn.execute("SELECT stats_json FROM parcel_value_loads").fetchone()[0])
+    assert rows["1448671584"]["total_value"] == 7015600  # not 3x
+    assert rows["1429682282"]["total_value"] == 251600 + 189900  # two condo accounts
+    assert all(r["tax_year"] == 2027 and r["tax_year_status"] == "confirmed" for r in rows.values())
+    assert rows["1448671584"]["source_vintage"] == "2026-07-01"
+    assert stats["account_without_gpin"] == 1 and stats["building_rows_repeating_account"] == 2
+
+
+def test_norfolk_roll_refuses_disagreeing_account_or_mixed_years(env, monkeypatch):
+    bad = [dict(ROLL[0]), {**ROLL[1], "current_total_value": "1"}]
+    monkeypatch.setattr(lpv, "fetch_json", _roll(bad, []))
+    assert lpv.main(["--locality", "norfolk"]) == 3
+    mixed = [dict(ROLL[0]), {**ROLL[3], "effective_year": "2025-07-01T00:00:00.000"}]
+    monkeypatch.setattr(lpv, "fetch_json", _roll(mixed, []))
+    assert lpv.main(["--locality", "norfolk"]) == 3
+    with db_module.db_readonly(env["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM parcel_value_loads").fetchone()[0] == 0
