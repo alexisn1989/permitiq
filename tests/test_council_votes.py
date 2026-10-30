@@ -347,7 +347,7 @@ def test_newport_news_roll_from_member_rows_unknown_kept(env, tmp_path):
     votes = [("1", "adoption of the ordinance", "Carried", "2-0"), ("2", "to close the public hearing", "DEFEATED.", "0-2")]
     w("newport_news_council_votes.csv", CV.NN_VOTE_COLUMNS, [
         {"id": i, "meeting_date": "Mar 12 2025", "title": "x", "agenda_item": i, "motion": m, "moved_by": "", "seconded_by": "",
-         "result": res, "vote_count": vc, "votes_json": "{}", "category": "substantive", "scraped_at": "x"} for i, m, res, vc in votes])
+         "result": res, "vote_count": vc, "votes_json": "", "category": "substantive", "scraped_at": "x"} for i, m, res, vc in votes])
     who = {"1": {"Alpha": "yes", "Bravo": "yes", "Charlie": "unknown"}, "2": {"Alpha": "no", "Bravo": "no", "Charlie": "absent"}}
     w("newport_news_council_member_votes.csv", CV.NN_MEMBER_VOTE_COLUMNS, [
         {"id": f"{v}-{k}", "vote_id": v, "meeting_date": "Mar 12 2025", "member_name": k, "vote": x, "agenda_item": v,

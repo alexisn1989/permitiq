@@ -246,7 +246,10 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
         if r["result"] not in ("passed", "failed", "tabled", "withdrawn", "deferred", "denied"):
             problems.append(f"vote {r['id']}: result {r['result']!r} not seen before")
         try:
-            listed = json.loads(r["votes_json"])
+            raw_json = r["votes_json"]
+            if lay.get("roll_from_members") and not (raw_json or "").strip():
+                raw_json = "{}"  # Newport News leaves it blank: the member rows are the roll call
+            listed = json.loads(raw_json)
         except ValueError:
             problems.append(f"vote {r['id']}: votes_json unreadable")
             listed = {}
