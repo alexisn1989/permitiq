@@ -2,7 +2,7 @@
 both requested with value fields only (each also holds owner names; they never reach
 this script). One active load per locality; an identical re-read changes nothing.
 
-* Chesapeake -- the HRGEO regional parcel layer (geo.hrsd.com), HRSD's republication of
+* Chesapeake and Portsmouth -- the HRGEO regional parcel layer (geo.hrsd.com), HRSD's republication of
   city GIS. No tax year is stated: rows are stored with tax_year NULL / 'unconfirmed'.
 * Norfolk -- the city Real Estate Assessor's own roll on data.norfolk.gov ("Property
   Assessment and Sales - FY27", ProVal, updated daily). One row per building
@@ -14,7 +14,7 @@ this script). One active load per locality; an identical re-read changes nothing
 No tax bill is computed from either.
 
 Usage (after scripts/migrate_db.py, schema v26):
-  python scripts/load_parcel_values.py --locality chesapeake|norfolk [--dry-run]
+  python scripts/load_parcel_values.py --locality chesapeake|norfolk|portsmouth [--dry-run]
 """
 
 from __future__ import annotations
@@ -36,27 +36,29 @@ from ingest.common import fetch_json_retry  # noqa: E402
 fetch_json = fetch_json_retry  # indirection so tests can stub the network
 
 LAYER = "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0"
-FIPS = {"chesapeake": "550"}  # HRGEO's 3-digit county code; its PARCELID is Chesapeake's MAP_PARCEL
+FIPS = {"chesapeake": "550", "portsmouth": "740"}  # HRGEO's 3-digit county code
+# the HRGEO field that equals the city's parcel id in PermitIQ: Chesapeake's MAP_PARCEL is PARCELID;
+# Portsmouth's parcels are keyed by their tax-map number (parcel load from this same layer)
+KEY_FIELD = {"chesapeake": "PARCELID", "portsmouth": "TAXMAPNO"}
 ROLLS = {"norfolk": "https://data.norfolk.gov/resource/qva7-tzrf.json"}  # Property Assessment and Sales - FY27
 ROLL_FIELDS = ("parcel_id", "gpin", "extension", "current_land_value", "current_improvement_value",
                "current_total_value", "effective_year")
 ROLL_PAGE = 50000
 LOCALITIES = sorted({*FIPS, *ROLLS})
-FIELDS = ("FIPS", "PARCELID", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
-OUT_FIELDS = "OBJECTID," + ",".join(FIELDS)
+FIELDS = ("FIPS", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
 
 
 def _num(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def normalize(features: list[dict], stats: Counter) -> tuple[list[dict], str | None]:
+def normalize(features: list[dict], stats: Counter, key: str = "PARCELID") -> tuple[list[dict], str | None]:
     """One row per parcel id; conflicting duplicates keep no value; the newest LASTUPDATE."""
     by: dict[str, dict] = {}
     newest = None
     for f in features:
         p = f.get("properties") or {}
-        gpin = str(p.get("PARCELID") or "").strip()
+        gpin = str(p.get(key) or "").strip()
         if not gpin or gpin == "None":
             stats["no_parcel_id"] += 1
             continue
@@ -149,12 +151,13 @@ def read_roll(locality: str, stats: Counter) -> tuple[list[dict], dict]:
 def read_hrgeo(locality: str, stats: Counter) -> tuple[list[dict], dict]:
     meta = fetch_json(LAYER, {"f": "json"})
     names = {f.get("name", "").upper() for f in meta.get("fields", [])}
-    missing = [f for f in FIELDS if f not in names]
+    key = KEY_FIELD[locality]
+    missing = [f for f in (*FIELDS, key) if f not in names]
     if missing:
         raise ValueError(f"{locality}: fields {missing} are missing from the source")
-    raw = arcgis.fetch_all_by_ids(fetch_json, LAYER, f"FIPS = '{FIPS[locality]}'", out_fields=OUT_FIELDS,
-                                  label=f"{locality} values", geometry=False, batch=1000)
-    rows, vintage = normalize(raw, stats)
+    raw = arcgis.fetch_all_by_ids(fetch_json, LAYER, f"FIPS = '{FIPS[locality]}'", out_fields=",".join(("OBJECTID", key, *FIELDS)), label=f"{locality} values",
+                                  geometry=False, batch=1000)
+    rows, vintage = normalize(raw, stats, key)
     return rows, {"source_url": LAYER, "expected": len(raw), "received": len(raw), "vintage": vintage,
                   "tax_year": None, "status": "unconfirmed"}
 

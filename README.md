@@ -625,6 +625,12 @@ python scripts/tag_parcel_constraints.py --locality norfolk
 - **Read 2026-10-30:** 92,498 features → 92,403 parcels (95 exact duplicate rows collapsed), 92,316 with a value, $47.52B; refreshed 2026-02-27. 92,335 of the 92,708 Chesapeake parcels match by id.
 - **Shown on Chesapeake case cards** as "Assessed value (tax year unconfirmed)", with land and improvements. The source states no tax year, so `tax_year` stays NULL (`tax_year_status = 'unconfirmed'`) and **no tax bill is computed or shown**. Values attach only to the same city's parcels.
 
+### Portsmouth assessed values (HRGEO, tax year unconfirmed)
+
+- **Source:** HRGEO, `FIPS = '740'`, keyed by `TAXMAPNO` (the tax-map number PermitIQ's Portsmouth parcels already use; parcel load and values come from the same layer). `python scripts/load_parcel_values.py --locality portsmouth`.
+- **Read 2026-10-30:** 36,616 rows → 36,597 parcels ($15.56B; refreshed 2026-02-27); 13 identical duplicate rows collapsed; 2 tax-map numbers with conflicting values are kept without a value; 4 rows have no tax-map number. All 36,595 Portsmouth parcels have a value. Three values checked against a live HRGEO query.
+- **Tax year unconfirmed** (HRGEO states none; its Norfolk slice proved one year behind). Portsmouth's own assessor pages are served from `data.portsmouthva.gov`, blocked by the network policy. No tax bill is computed; Portsmouth has no permits or cases yet, so the values are not yet shown on any card.
+
 ### Norfolk assessed values (the Assessor's FY2027 roll)
 
 - **Source:** the City of Norfolk Real Estate Assessor's "Property Assessment and Sales – FY27" on data.norfolk.gov (ProVal, updated daily). `python scripts/load_parcel_values.py --locality norfolk`.

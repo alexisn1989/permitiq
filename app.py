@@ -981,6 +981,7 @@ def _record_load(conn, source: str) -> Optional[dict]:
 VALUE_SOURCES = {
     "chesapeake": "HRGEO, HRSD's regional republication of the city's parcel data",
     "norfolk": "the City of Norfolk Real Estate Assessor's roll (data.norfolk.gov)",
+    "portsmouth": "HRGEO, HRSD's regional republication of the city's parcel data",
 }
 
 

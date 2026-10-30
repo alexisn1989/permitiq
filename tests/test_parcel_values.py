@@ -37,7 +37,8 @@ FEATS = [_f(1, "550", "0940000000293", 252000, 320500, 572500),
 def _service(seen):
     def fetch(url, params=None, **kw):
         if not url.endswith("/query"):
-            return {"fields": [{"name": n} for n in ("OBJECTID", *lpv.FIELDS, "OWNERNME1", "MLADDRESS")]}
+            return {"fields": [{"name": n} for n in ("OBJECTID", "PARCELID", "TAXMAPNO", *lpv.FIELDS, "OWNERNME1",
+                                                     "MLADDRESS")]}
         seen.append(params)
         fips = params["where"].split("'")[1] if "where" in params else None
         sel = [f for f in FEATS if fips is None or f["properties"]["FIPS"] == fips]
@@ -158,3 +159,24 @@ def test_norfolk_roll_refuses_disagreeing_account_or_mixed_years(env, monkeypatc
     assert lpv.main(["--locality", "norfolk"]) == 3
     with db_module.db_readonly(env["db"]) as conn:
         assert conn.execute("SELECT COUNT(*) FROM parcel_value_loads").fetchone()[0] == 0
+
+
+def test_portsmouth_values_keyed_by_tax_map_number(env, monkeypatch):
+    seen = []
+    pt = [{"type": "Feature", "id": 50 + i, "geometry": None,
+           "properties": {"OBJECTID": 50 + i, "FIPS": "740", "PARCELID": f"0846{i:04d}", "TAXMAPNO": tm,
+                          "LNDVALUE": 20000, "IMPVALUE": v - 20000, "TOTVALUE": v, "LASTUPDATE": 1772150400000,
+                          "OWNERNME1": "Jane Q Public"}}
+          for i, (tm, v) in enumerate((("846-70", 133390), ("846-80", 134950)))]
+    monkeypatch.setattr(sys.modules[__name__], "FEATS", FEATS + pt)
+    monkeypatch.setattr(lpv, "fetch_json", _service(seen))
+    with db_module.db(env["db"]) as conn:
+        _parcels(conn, "portsmouth", ["846-70", "846-80"])
+    assert lpv.main(["--locality", "portsmouth"]) == 0
+    assert {p["where"] for p in seen if "where" in p} == {"FIPS = '740'"}
+    assert all(p["outFields"].split(",")[:2] == ["OBJECTID", "TAXMAPNO"] and "OWNER" not in p["outFields"]
+               for p in seen if "outFields" in p)
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["gpin"]: r["total_value"] for r in conn.execute(
+            "SELECT gpin, total_value FROM parcel_values_effective WHERE locality = 'portsmouth'")}
+    assert rows == {"846-70": 133390, "846-80": 134950}
