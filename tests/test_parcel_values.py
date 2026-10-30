@@ -180,3 +180,33 @@ def test_portsmouth_values_keyed_by_tax_map_number(env, monkeypatch):
         rows = {r["gpin"]: r["total_value"] for r in conn.execute(
             "SELECT gpin, total_value FROM parcel_values_effective WHERE locality = 'portsmouth'")}
     assert rows == {"846-70": 133390, "846-80": 134950}
+
+
+def test_newport_news_current_values_from_the_city_layer(env, monkeypatch):
+    seen = []
+    nn = [{"type": "Feature", "id": 70 + i, "geometry": None,
+           "properties": {"OBJECTID": 70 + i, "PARCELID": pid, "CNTLNDVAL": land, "CNTIMPVAL": impr,
+                          "PRVLNDVAL": 1, "PRVIMPVAL": 1, "LASTUPDATE": 1792605279000, "OWNERNME1": "Jane Q Public"}}
+          for i, (pid, land, impr) in enumerate((("294020532", 37000, 171000), ("294010337", 18500, 0)))]
+
+    def fetch(url, params=None, **kw):
+        if not url.endswith("/query"):
+            return {"fields": [{"name": n} for n in ("OBJECTID", "PARCELID", "CNTLNDVAL", "CNTIMPVAL", "PRVLNDVAL",
+                                                     "PRVIMPVAL", "LASTUPDATE", "OWNERNME1")]}
+        seen.append(params)
+        if params.get("returnCountOnly"):
+            return {"count": len(nn)}
+        if params.get("returnIdsOnly"):
+            return {"objectIds": [f["id"] for f in nn]}
+        keep = params["outFields"].split(",")
+        return {"features": [{**f, "properties": {k: v for k, v in f["properties"].items() if k in keep}} for f in nn]}
+    monkeypatch.setattr(lpv, "fetch_json", fetch)
+    with db_module.db(env["db"]) as conn:
+        _parcels(conn, "newport_news", ["294020532", "294010337"])
+    assert lpv.main(["--locality", "newport_news"]) == 0
+    assert all("OWNER" not in p["outFields"] and "PRV" not in p["outFields"] for p in seen if "outFields" in p)
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["gpin"]: dict(r) for r in conn.execute(
+            "SELECT * FROM parcel_values_effective WHERE locality = 'newport_news'")}
+    assert rows["294020532"]["total_value"] == 208000 and rows["294010337"]["total_value"] == 18500
+    assert all(r["tax_year"] is None and r["tax_year_status"] == "unconfirmed" for r in rows.values())

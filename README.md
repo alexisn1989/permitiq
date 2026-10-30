@@ -625,6 +625,12 @@ python scripts/tag_parcel_constraints.py --locality norfolk
 - **Read 2026-10-30:** 92,498 features → 92,403 parcels (95 exact duplicate rows collapsed), 92,316 with a value, $47.52B; refreshed 2026-02-27. 92,335 of the 92,708 Chesapeake parcels match by id.
 - **Shown on Chesapeake case cards** as "Assessed value (tax year unconfirmed)", with land and improvements. The source states no tax year, so `tax_year` stays NULL (`tax_year_status = 'unconfirmed'`) and **no tax bill is computed or shown**. Values attach only to the same city's parcels.
 
+### Newport News assessed values (the city's parcel layer, current values)
+
+- **Source:** the City of Newport News parcel layer (`maps.nnva.gov`, `Operational/Parcel/MapServer/0`), which carries **Previous** and **Current** land and improvement values. PermitIQ reads Current (`CNTLNDVAL` + `CNTIMPVAL`; the layer has no total field) by `PARCELID`. Owner and mailing fields are never requested. `python scripts/load_parcel_values.py --locality newport_news`.
+- **Read 2026-10-30:** 54,440 rows → 54,343 parcels (96 exact duplicate rows collapsed — a few placeholder ids such as `999999001` repeat on up to 25 rows, so a raw row sum overstates the city total by ~$7.5B); 274 parcels without a value. **$33.24B** current vs $32.27B previous. All 54,343 Newport News parcels have a value; three checked against the city layer directly.
+- **Which year:** HRGEO's Newport News values equal the city's *Previous* values on 199 of 200 sampled parcels (HRGEO lags a year, as for Norfolk), and non-government parcels rose +3.65% Previous → Current, close to the 3.56% FY2027 reassessment the city reported. Current is therefore very likely the FY2027 roll, but the layer states no year, so it is stored `'unconfirmed'`.
+
 ### Portsmouth assessed values (HRGEO, tax year unconfirmed)
 
 - **Source:** HRGEO, `FIPS = '740'`, keyed by `TAXMAPNO` (the tax-map number PermitIQ's Portsmouth parcels already use; parcel load and values come from the same layer). `python scripts/load_parcel_values.py --locality portsmouth`.

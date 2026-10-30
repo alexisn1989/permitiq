@@ -1,5 +1,5 @@
-"""Load assessed values per parcel. Two kinds of source, both read complete or not at all,
-both requested with value fields only (each also holds owner names; they never reach
+"""Load assessed values per parcel. Three kinds of source, all read complete or not at all,
+all requested with value fields only (each also holds owner names; they never reach
 this script). One active load per locality; an identical re-read changes nothing.
 
 * Chesapeake and Portsmouth -- the HRGEO regional parcel layer (geo.hrsd.com), HRSD's republication of
@@ -11,10 +11,13 @@ this script). One active load per locality; an identical re-read changes nothing
   stops the run) and summed per GPIN. The roll's effective date (July 1, 2026) fixes the
   tax year: FY2027, stored 'confirmed'.
 
-No tax bill is computed from either.
+* Newport News -- the city's own parcel layer (maps.nnva.gov), its "Current" land and
+  improvement values (summed for the total). The layer states no year: 'unconfirmed'.
+
+No tax bill is computed from any of them.
 
 Usage (after scripts/migrate_db.py, schema v26):
-  python scripts/load_parcel_values.py --locality chesapeake|norfolk|portsmouth [--dry-run]
+  python scripts/load_parcel_values.py --locality chesapeake|newport_news|norfolk|portsmouth [--dry-run]
 """
 
 from __future__ import annotations
@@ -44,7 +47,13 @@ ROLLS = {"norfolk": "https://data.norfolk.gov/resource/qva7-tzrf.json"}  # Prope
 ROLL_FIELDS = ("parcel_id", "gpin", "extension", "current_land_value", "current_improvement_value",
                "current_total_value", "effective_year")
 ROLL_PAGE = 50000
-LOCALITIES = sorted({*FIPS, *ROLLS})
+# a city's own parcel layer carrying its "current" land / improvement values (no total field and no
+# year): Newport News publishes Previous and Current values; HRGEO equals Previous on 199 of 200
+# sampled parcels, so Current is the newer roll. The layer also holds owner and mailing fields,
+# never requested.
+CITY_LAYERS = {"newport_news": {"url": "https://maps.nnva.gov/gis/rest/services/Operational/Parcel/MapServer/0",
+                                "key": "PARCELID", "land": "CNTLNDVAL", "impr": "CNTIMPVAL"}}
+LOCALITIES = sorted({*FIPS, *ROLLS, *CITY_LAYERS})
 FIELDS = ("FIPS", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
 
 
@@ -162,13 +171,36 @@ def read_hrgeo(locality: str, stats: Counter) -> tuple[list[dict], dict]:
                   "tax_year": None, "status": "unconfirmed"}
 
 
+def read_city_layer(locality: str, stats: Counter) -> tuple[list[dict], dict]:
+    c = CITY_LAYERS[locality]
+    meta = fetch_json(c["url"], {"f": "json"})
+    names = {f.get("name", "") for f in meta.get("fields", [])}
+    missing = [f for f in (c["key"], c["land"], c["impr"], "LASTUPDATE") if f not in names]
+    if missing:
+        raise ValueError(f"{locality}: fields {missing} are missing from the source")
+    raw = arcgis.fetch_all_by_ids(fetch_json, c["url"], "1=1",
+                                  out_fields=",".join(("OBJECTID", c["key"], c["land"], c["impr"], "LASTUPDATE")),
+                                  label=f"{locality} values", geometry=False, batch=1000)
+    feats = []
+    for f in raw:  # the city publishes land and improvements; their sum is the total
+        p = dict(f.get("properties") or {})
+        land, impr = _num(p.get(c["land"])), _num(p.get(c["impr"]))
+        p.update(LNDVALUE=land, IMPVALUE=impr, TOTVALUE=None if land is None and impr is None
+                 else (land or 0) + (impr or 0))
+        feats.append({"properties": p})
+    rows, vintage = normalize(feats, stats, c["key"])
+    return rows, {"source_url": c["url"], "expected": len(raw), "received": len(raw), "vintage": vintage,
+                  "tax_year": None, "status": "unconfirmed"}
+
+
 def content_hash(rows: list[dict]) -> str:
     return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def load(conn, locality: str, dry_run: bool) -> str:
     stats: Counter = Counter()
-    rows, src = read_roll(locality, stats) if locality in ROLLS else read_hrgeo(locality, stats)
+    reader = read_roll if locality in ROLLS else read_city_layer if locality in CITY_LAYERS else read_hrgeo
+    rows, src = reader(locality, stats)
     vintage = src["vintage"]
     pl = conn.execute("SELECT load_id FROM parcel_loads WHERE is_active = 1 AND locality = ?", (locality,)).fetchone()
     plid = pl["load_id"] if pl else None
