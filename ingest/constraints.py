@@ -155,8 +155,11 @@ NF_ENVELOPE = {"geometry": '{"xmin":-76.35,"ymin":36.81,"xmax":-76.16,"ymax":36.
 # Portsmouth: the VGIN parcels' extent for FIPS 51740 (2026-10-30) with a small margin
 PT_ENVELOPE = {"geometry": '{"xmin":-76.43,"ymin":36.78,"xmax":-76.28,"ymax":36.93,"spatialReference":{"wkid":4326}}',
                "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
+# Suffolk: the city parcel layer's extent (2026-10-30) with a small margin
+SF_ENVELOPE = {"geometry": '{"xmin":-76.94,"ymin":36.54,"xmax":-76.39,"ymax":36.94,"spatialReference":{"wkid":4326}}',
+               "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
 ENVELOPES = {"virginia_beach": VB_ENVELOPE, "chesapeake": CHES_ENVELOPE, "norfolk": NF_ENVELOPE,
-             "portsmouth": PT_ENVELOPE}
+             "portsmouth": PT_ENVELOPE, "suffolk": SF_ENVELOPE}
 
 # Chesapeake (city GIS profiled 2026-10-28; layers measured only on Chesapeake parcels). Its RPA buffer is
 # drawn as polygons (100 / 50 ft from the city's perennial-water layer), so RPA acres are measured here.
@@ -319,10 +322,73 @@ PORTSMOUTH_LAYERS = (
           where="JURISDICTION_DESC = 'Portsmouth'", fmt=LAYERS["vdot_syip_points"].fmt, locality="portsmouth"),
 )
 LAYERS.update({l.key: l for l in PORTSMOUTH_LAYERS})
+
+# Suffolk (suffolkgis.suffolk-va.net, profiled 2026-10-30; measured only on Suffolk parcels). Its RPA is the 100-ft
+# boundary line (like Virginia Beach's): "crosses / lies N ft from", never RPA acres. Sewer and water mains are
+# published: size and material as published, capacity never inferred.
+SF = "https://suffolkgis.suffolk-va.net/hosting/rest/services"
+_SZ = f"{SF}/Zoning_Map/MapServer"
+SUFFOLK_LAYERS = (
+    Layer("sf_rpa", f"{_SZ}/6", "line_crossing", "Chesapeake Bay RPA boundary (100 ft)",
+          "The city's Resource Protection Area boundary line, 100 ft from the protected feature: the parcel is crossed "
+          "by it or lies within 100 ft of it (no RPA acres claimed).", near_ft=100, locality="suffolk"),
+    Layer("sf_cbpa", f"{SF}/SharedMaps/Resource_Protection_Areas/MapServer/1", "polygon_share",
+          "Chesapeake Bay Preservation Area (city layer)", "Chesapeake Bay Preservation Area: CBPA performance "
+          "criteria apply.", locality="suffolk"),
+    Layer("sf_zoning", f"{_SZ}/11", "polygon_share", "Zoning (city layer)", "Zoning district(s) of the parcel.",
+          ("CODE",), "CODE", classification=True, locality="suffolk"),
+    Layer("sf_airport_overlay", f"{_SZ}/1", "polygon_share", "Airport Overlay District",
+          "Airport overlay: height and land-use limits.", ("OVERLAY_TYPE",), "OVERLAY_TYPE", locality="suffolk"),
+    Layer("sf_historic_overlay", f"{_SZ}/4", "polygon_share", "Historic Conservation Overlay District",
+          "Exterior work needs historic review.", ("OVERLAY_TYPE",), locality="suffolk"),
+    Layer("sf_historic_districts", f"{_SZ}/5", "polygon_share", "National Register historic district (city layer)",
+          "A National Register historic district as mapped by the city.", ("DISTRICT", "DIST_TYPE"), "DISTRICT",
+          locality="suffolk"),
+    Layer("sf_scod", f"{_SZ}/7", "polygon_share", "Special Corridor Overlay District",
+          "Corridor design standards apply.", ("OVERLAY_TYPE",), locality="suffolk"),
+    Layer("sf_growth_areas", f"{_SZ}/3", "polygon_share", "Growth area (comprehensive plan)",
+          "Inside a growth area designated in the city's comprehensive plan.", ("G_Area",), "G_Area",
+          locality="suffolk"),
+    Layer("sf_sewer_service", f"{SF}/Sewer_Service_Areas/MapServer/1", "polygon_share", "Sewer service area",
+          "The sewer service area and its receiving facility, as published. Capacity is not published.",
+          ("AREANAME", "TYPE", "RECEIVER"), "AREANAME", classification=True, locality="suffolk"),
+    Layer("sf_gravity_sewer", f"{SF}/Sewer_Gravity_Main/MapServer/1", "line_crossing", "City gravity sewer main",
+          "Nearest published city gravity sewer main within 300 ft (size and material as published; capacity not "
+          "published).", ("DIAMETER", "MATERIAL", "OWNERSHIP"), near_ft=300, fmt="{DIAMETER} in {MATERIAL}",
+          locality="suffolk"),
+    Layer("sf_water_main", f"{SF}/Water_Main/MapServer/1", "line_crossing", "City water main",
+          "Nearest published city water main within 300 ft.", ("Diameter", "Material", "Ownership"), near_ft=300,
+          fmt="{Diameter} in {Material}", locality="suffolk"),
+    # federal and state layers, Suffolk's extent / survey area. NRHP has a Suffolk in VA, NY and MA.
+    Layer("sf_usda_soils", "VA800", "polygon_share", "Soils (USDA soil survey)",
+          LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",
+          locality="suffolk"),
+    Layer("sf_nwi_wetlands", LAYERS["nwi_wetlands"].url, "polygon_share", LAYERS["nwi_wetlands"].label,
+          LAYERS["nwi_wetlands"].meaning, LAYERS["nwi_wetlands"].attrs, "WETLAND_TYPE", bbox=True,
+          where=LAYERS["nwi_wetlands"].where, locality="suffolk"),
+    Layer("sf_nrhp_polygons", LAYERS["nrhp_polygons"].url, "polygon_share", LAYERS["nrhp_polygons"].label,
+          LAYERS["nrhp_polygons"].meaning, LAYERS["nrhp_polygons"].attrs, "RESNAME",
+          where="County = 'Suffolk' AND State = 'VIRGINIA'", locality="suffolk"),
+    Layer("sf_nrhp_points", LAYERS["nrhp_points"].url, "point_near", LAYERS["nrhp_points"].label,
+          LAYERS["nrhp_points"].meaning, LAYERS["nrhp_points"].attrs, near_ft=500,
+          where="County = 'Suffolk' AND State = 'VIRGINIA'", fmt=LAYERS["nrhp_points"].fmt, locality="suffolk"),
+    Layer("sf_vdot_adt", LAYERS["vdot_adt"].url, "line_crossing", LAYERS["vdot_adt"].label,
+          LAYERS["vdot_adt"].meaning, LAYERS["vdot_adt"].attrs, near_ft=300,
+          where="FROM_JURISDICTION = 'City of Suffolk' OR TO_JURISDICTION = 'City of Suffolk'",
+          fmt=LAYERS["vdot_adt"].fmt, locality="suffolk"),
+    Layer("sf_vdot_syip_lines", LAYERS["vdot_syip_lines"].url, "line_crossing", LAYERS["vdot_syip_lines"].label,
+          LAYERS["vdot_syip_lines"].meaning, LAYERS["vdot_syip_lines"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Suffolk'", fmt=LAYERS["vdot_syip_lines"].fmt, locality="suffolk"),
+    Layer("sf_vdot_syip_points", LAYERS["vdot_syip_points"].url, "point_near", LAYERS["vdot_syip_points"].label,
+          LAYERS["vdot_syip_points"].meaning, LAYERS["vdot_syip_points"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Suffolk'", fmt=LAYERS["vdot_syip_points"].fmt, locality="suffolk"),
+)
+LAYERS.update({l.key: l for l in SUFFOLK_LAYERS})
 # the same national layer under another city's key: soil summary, NRHP boxes and wording behave the same
 BASE_KEY = {**{l.key: l.key.removeprefix("ches_") for l in CHESAPEAKE_LAYERS},
             **{l.key: l.key.removeprefix("nf_") for l in NORFOLK_LAYERS},
-            **{l.key: l.key.removeprefix("pt_") for l in PORTSMOUTH_LAYERS}}
+            **{l.key: l.key.removeprefix("pt_") for l in PORTSMOUTH_LAYERS},
+            **{l.key: l.key.removeprefix("sf_") for l in SUFFOLK_LAYERS}}
 
 BOARD_LAYERS = {
     "cbpa": (f"{PLAN}/3", "Chesapeake Bay Preservation Area Board actions"),
@@ -596,7 +662,7 @@ def public_constraints(conn, gpins: list[str]) -> dict:
     not_covered = []
     if cities & {"virginia_beach", "norfolk", "portsmouth"}:  # none of them publishes its sewer / water lines
         not_covered.append("sewer / water capacity and pipe locations (not published)")
-    if "chesapeake" in cities:
+    if cities & {"chesapeake", "suffolk"}:
         not_covered.append("sewer / water capacity (not published; mains and service areas are shown as published)")
     not_covered.append("Virginia Landmarks Register (state DHR service unreachable)")
     return {

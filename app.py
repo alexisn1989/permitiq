@@ -951,7 +951,11 @@ NORFOLK_CASE_NOTICE = ("Approved land-use items from Norfolk's GIS: Conditional 
                        "each granted by a City Council ordinance. Norfolk publishes no pending cases, so only approvals "
                        "appear. Permits on the same parcels are candidates, not confirmed links. Applicant names and "
                        "the city's notes are not shown.")
-CASE_NOTICES = {"chesapeake": CASE_NOTICE, "norfolk": NORFOLK_CASE_NOTICE}
+SUFFOLK_CASE_NOTICE = ("Approved land-use items from Suffolk's Development Restrictions layer (conditional use "
+                       "permits, conditional zonings, rezonings, Board of Zoning Appeals actions, variances and other "
+                       "restrictions), with the type as the city prints it. Only approvals appear. The city's comments "
+                       "are not shown.")
+CASE_NOTICES = {"chesapeake": CASE_NOTICE, "norfolk": NORFOLK_CASE_NOTICE, "suffolk": SUFFOLK_CASE_NOTICE}
 RECORD_NOTICE = ("Development plans and right-of-way permits as the city publishes them. They are not building permits "
                  "and are not counted as permits. Names of private individuals are not shown.")
 

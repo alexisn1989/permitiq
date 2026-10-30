@@ -69,7 +69,13 @@ PARCEL_FIELD_MAPS = {
     # tax-map parcel number ("0891-0090", 8 digits); the layer is Web Mercator, so its area is not used
     "portsmouth": {"gpin": "PTM_ID", "zoning": None, "land_use": None, "prop_class": None,
                    "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None},
+    # Suffolk (city Zoning_Map/MapServer/43, profiled 2026-10-30): GPIN "0453-11-3917", ZONE_CLASS, NTI_ACREAGE
+    # (acres). The layer also carries OWNER and MAILING_ADDRESS*: only PARCEL_OUT_FIELDS are ever requested.
+    "suffolk": {"gpin": "GPIN", "zoning": "ZONE_CLASS", "land_use": None, "prop_class": None,
+                "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None, "acreage": "NTI_ACREAGE"},
 }
+# Fields requested from a layer that also holds personal data (default: all fields)
+PARCEL_OUT_FIELDS = {"suffolk": "OBJECTID,GPIN,ZONE_CLASS,NTI_ACREAGE"}
 # A statewide layer is filtered to the city; a city layer reads everything
 PARCEL_WHERE = {"portsmouth": "FIPS = '51740'"}
 # Digits a parcel id must have (Portsmouth's tax-map numbers are 8)
@@ -79,6 +85,7 @@ PARCEL_SOURCES = {
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
     "norfolk": "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData/Parcels/MapServer/1",
     "portsmouth": "https://cmap22.vims.edu/arcgis/rest/services/VirginiaAndBaywide/VirginiaParcelsAndTables/MapServer/0",
+    "suffolk": "https://suffolkgis.suffolk-va.net/hosting/rest/services/Zoning_Map/MapServer/43",
 }
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
 HAZARD_CLASSES = ("sfha_v", "sfha_a", "shaded_x")
