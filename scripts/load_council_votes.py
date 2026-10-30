@@ -43,7 +43,7 @@ def cross_check(conn, locality: str) -> tuple[Counter, list[tuple]]:
     out, review = Counter(), []
     for cid, votes in sorted(by_case.items()):
         c = cases.get(cid)
-        check = CV.case_check(votes, c["cc_action"] if c else None, c is not None)
+        check = CV.case_check(votes, CV.city_action(locality, c["cc_action"], c["stage"]) if c else None, c is not None)
         out[check] += 1
         if check in ("disagrees", "city_not_recorded"):
             for v in sorted(votes, key=lambda x: (x["meeting_date"] or "", x["vote_id"])):
@@ -55,17 +55,18 @@ def cross_check(conn, locality: str) -> tuple[Counter, list[tuple]]:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Load a city's Council votes from a VoteIQ export")
-    p.add_argument("--locality", required=True, choices=("chesapeake",))
+    p.add_argument("--locality", required=True, choices=sorted(CV.LAYOUTS))
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--reports-dir", type=Path, default=BASE / "reports")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     try:
-        texts = {k: (args.dir / fname).read_text(encoding="utf-8-sig") for k, (fname, _) in CV.FILES.items()}
+        files = CV.LAYOUTS[args.locality]["files"]
+        texts = {k: (args.dir / fname).read_text(encoding="utf-8-sig") for k, (fname, _) in files.items()}
         with db_module.db_readonly() as conn:
-            known = {r[0] for r in conn.execute("SELECT case_id FROM land_use_cases_effective WHERE locality = ?",
-                                                (args.locality,))}
-        data = CV.build(texts, known)
+            known = {r[0]: r[1] for r in conn.execute(
+                "SELECT case_id, address FROM land_use_cases_effective WHERE locality = ?", (args.locality,))}
+        data = CV.build(texts, known, args.locality)
     except (CV.ExportError, OSError, ValueError) as e:
         print(f"[FATAL] {e}; nothing written", file=sys.stderr)
         return 1
@@ -86,13 +87,13 @@ def main(argv=None) -> int:
         else:
             conn.execute("UPDATE council_vote_loads SET is_active = 0 WHERE locality = ? AND is_active = 1",
                          (args.locality,))
-            files = {fname: hashlib.sha256(texts[k].encode()).hexdigest()
-                     for k, (fname, _) in CV.FILES.items()}
+            file_hashes = {fname: hashlib.sha256(texts[k].encode()).hexdigest()
+                           for k, (fname, _) in files.items()}
             load_id = conn.execute(
                 "INSERT INTO council_vote_loads (locality, source, files_json, votes, member_votes, members, "
                 "agenda_items, undated_votes, date_min, date_max, content_hash, loaded_at, is_active) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",
-                (args.locality, CV.SOURCE, json.dumps(files), len(data["votes"]), len(data["member_votes"]),
+                (args.locality, CV.LAYOUTS[args.locality]["source"], json.dumps(file_hashes), len(data["votes"]), len(data["member_votes"]),
                  len(data["members"]), len(data["agenda"]), data["undated"], data["date_min"], data["date_max"],
                  data["hash"], db_module.now_iso())).lastrowid
             conn.executemany(
@@ -114,6 +115,11 @@ def main(argv=None) -> int:
                 [(load_id, a["item_id"], a["event_id"], a["meeting_date"], a["item_ref"], a["section"], a["title"],
                   a["category"], a["agenda_url"], json.dumps(a["case_ids"]), a["lat"], a["lng"], a["scraped_at"])
                  for a in data["agenda"]])
+            conn.executemany(  # counts only: no speaker name, address or coordinate exists past build()
+                "INSERT INTO council_testimony_counts (load_id, meeting_date, agenda_item, support, oppose, comment, "
+                "present) VALUES (?,?,?,?,?,?,?)",
+                [(load_id, t["meeting_date"], t["agenda_item"], t["support"], t["oppose"], t["comment"], t["present"])
+                 for t in data["testimony"]])
             print(f"activated load {load_id}")
         checks, review = cross_check(conn, args.locality)
     path = args.reports_dir / f"council_case_review_{args.locality}.csv"

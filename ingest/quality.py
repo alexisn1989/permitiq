@@ -394,8 +394,8 @@ def council_vote_quality(conn) -> dict | None:
         for r in conn.execute("SELECT * FROM council_votes_effective WHERE locality = ?", (city,)):
             for cid in json.loads(r["case_ids_json"]):
                 votes.setdefault(cid, []).append(dict(r))
-        cases = {r[0]: r[1] for r in conn.execute(
-            "SELECT case_id, cc_action FROM land_use_cases_effective WHERE locality = ?", (city,))}
+        cases = {r[0]: council_votes.city_action(city, r[1], r[2]) for r in conn.execute(
+            "SELECT case_id, cc_action, stage FROM land_use_cases_effective WHERE locality = ?", (city,))}
         checks: dict[str, int] = {}
         for cid, vs in votes.items():
             k = council_votes.case_check(vs, cases.get(cid), cid in cases)

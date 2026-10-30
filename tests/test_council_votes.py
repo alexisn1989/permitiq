@@ -143,3 +143,58 @@ def test_council_card_escapes():
                          capture_output=True, text=True, check=True).stdout
     assert "<b>Approve" not in out and "<script>" not in out and 'href="javascript' not in out
     assert "printed tally 9-0 differs" in out and "does not match the city" in out and "Scheduled for City Council 2999-01-05" in out
+
+
+# ---------- Norfolk layout: testimony as counts only, exact case links ----------
+
+def _nf_write(tmp, votes, testimony):
+    import csv
+    def w(name, cols, rows):
+        with (tmp / name).open("w", newline="", encoding="utf-8") as fh:
+            wr = csv.DictWriter(fh, fieldnames=cols)
+            wr.writeheader()
+            wr.writerows(rows)
+    vrows, mrows = [], []
+    for i, title, motion, votes_json in votes:
+        y = sum(v == "yes" for v in votes_json.values()); n = sum(v == "no" for v in votes_json.values())
+        vrows.append({"id": str(i), "meeting_id": "77", "meeting_date": "MARCH 25, 2025", "agenda_item": f"R-{i}",
+                      "title": title, "motion": motion, "moved_by": "Alpha", "seconded_by": "Bravo", "result": "passed",
+                      "vote_count": f"{y}-{n}", "votes_json": json.dumps(votes_json), "scraped_at": "x",
+                      "category": "substantive"})
+        mrows += [{"id": f"{i}-{k}", "vote_id": str(i), "meeting_id": "77", "meeting_date": "MARCH 25, 2025",
+                   "member_name": k, "vote": x, "agenda_item": f"R-{i}", "title": title, "result": "passed",
+                   "category": "substantive"} for k, x in votes_json.items()]
+    w("norfolk_council_votes.csv", CV.NF_VOTE_COLUMNS, vrows)
+    w("norfolk_council_member_votes.csv", CV.NF_MEMBER_VOTE_COLUMNS, mrows)
+    w("norfolk_upcoming_agenda.csv", CV.NF_AGENDA_COLUMNS, [])
+    w("norfolk_council_testimony.csv", CV.NF_TESTIMONY_COLUMNS, testimony)
+    return tmp
+
+
+def test_norfolk_votes_testimony_counts_only_and_exact_links(env, tmp_path, monkeypatch):
+    import test_norfolk_records as TN
+    monkeypatch.setattr(TN.ln, "fetch_json", TN._service({TN.NR.SOURCES["nf_cups"]: [TN._cup(1, 50492.0, "1229 EXAMPLE AVENUE")],
+                                                          TN.NR.SOURCES["nf_conditional_zoning"]: []}))
+    assert TN.ln.main(["--all"]) == 0                        # NF-CUP-50492 at 1229 EXAMPLE AVENUE, approved
+    who = {"Alpha": "yes", "Smigiel": "yes", "Thomas Jr.": "no"}
+    votes = [(1, "An Ordinance Granting a Conditional Use Permit at 1229 Example Avenue", "Adopt", who),
+             (2, "An Ordinance Granting a Conditional Use Permit at 1229 Example", "Adopted", who),  # truncated: no link
+             (3, "Ordinance 50492 amending ...", "Adopt", who)]
+    speaker = lambda i, stance: {"id": str(i), "meeting_date": "MARCH 25, 2025", "agenda_item": "R-1",  # noqa: E731
+                                 "speaker_name": "Jane Q Public", "speaker_addr": "1 Private Ln", "stance": stance,
+                                 "note": "lives next door", "scraped_at": "x", "ward": "1", "superward": "6",
+                                 "lat": "36.9", "lon": "-76.2", "geocode_source": "census"}
+    _nf_write(tmp_path, votes, [speaker(1, "support"), speaker(2, "oppose"), speaker(3, "support")])
+    assert lcv.main(["--locality", "norfolk", "--dir", str(tmp_path), "--reports-dir", str(env["reports"])]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        links = {r["vote_id"]: json.loads(r["case_ids_json"]) for r in conn.execute("SELECT * FROM council_votes_effective")}
+        members = {r[0] for r in conn.execute("SELECT member FROM council_member_votes")}
+        t = dict(conn.execute("SELECT * FROM council_testimony_counts").fetchone())
+        dump = json.dumps([[dict(r) for r in conn.execute(f"SELECT * FROM {tb}")] for tb in
+                           ("council_votes", "council_member_votes", "council_testimony_counts", "council_agenda_items")])
+    assert links == {"1": ["NF-CUP-50492"], "2": [], "3": ["NF-CUP-50492"]}
+    assert members == {"Alpha", "Smigiel Jr.", "Thomas Jr."}
+    assert (t["support"], t["oppose"], t["comment"]) == (2, 1, 0) and t["meeting_date"] == "2025-03-25"
+    assert "Jane Q Public" not in dump and "Private Ln" not in dump and "next door" not in dump
+    d = client.get("/api/land-use/cases/NF-CUP-50492").json()
+    assert d["council_check"] == "agrees" and d["council_votes"][0]["testimony"]["support"] == 2

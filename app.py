@@ -1045,7 +1045,8 @@ def case_detail(case_id: str):
         out["permits_observed"] = {"from": permit_runs[0], "to": permit_runs[1]} if permit_runs[0] else None
         votes = _case_council_votes(conn, r["locality"], case_id)
         out["council_votes"] = votes
-        out["council_check"] = council_votes_mod.case_check(votes, r["cc_action"], True) if votes else None
+        out["council_check"] = council_votes_mod.case_check(
+            votes, council_votes_mod.city_action(r["locality"], r["cc_action"], r["stage"]), True) if votes else None
         out["council_scheduled"] = [dict(x) for x in conn.execute(
             "SELECT a.meeting_date, a.item_ref, a.title, a.agenda_url FROM council_agenda_effective a, "
             "json_each(a.case_ids_json) j WHERE a.locality = ? AND j.value = ? AND a.meeting_date >= date('now') "
@@ -1073,10 +1074,14 @@ def _vote_out(conn, v: dict) -> dict:
     members = [dict(m) for m in conn.execute(
         "SELECT m.member, m.vote FROM council_member_votes m WHERE m.load_id = ? AND m.vote_id = ? ORDER BY m.member",
         (v["load_id"], v["vote_id"]))]
+    t = conn.execute("SELECT support, oppose, comment, present FROM council_testimony_counts WHERE load_id = ? "
+                     "AND meeting_date IS ? AND agenda_item = ?", (v["load_id"], v["meeting_date"],
+                                                                   (v["agenda_item"] or "").strip())).fetchone()
     return {k: v[k] for k in ("vote_id", "meeting_date", "agenda_item", "title", "motion", "motion_kind", "moved_by",
                               "seconded_by", "result", "yes", "no", "abstain", "absent", "printed_tally",
                               "tally_mismatch", "category")} | {"case_ids": json.loads(v["case_ids_json"]),
-                                                                "members": members}
+                                                                "members": members,
+                                                                "testimony": dict(t) if t else None}
 
 
 def _case_council_votes(conn, locality: str, case_id: str) -> list[dict]:
