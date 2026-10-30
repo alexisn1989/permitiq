@@ -322,12 +322,12 @@
     const valued = (c.parcels || []).filter((p) => p.total_value != null);
     const money = (v) => (v != null ? `$${esc(fmtNum(v))}` : "–");
     const parcels = (c.parcels || []).map((p) =>
-      `<tr><td>${esc(p.gpin)}</td><td>${esc(p.prop_class || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td>${valued.length ? `<td>${p.total_value != null ? `${money(p.total_value)} <span class="muted small">(land ${money(p.land_value)} · improvements ${money(p.improvement_value)})</span>` : '<span class="muted">not published</span>'}</td>` : ""}</tr>`).join("");
+      `<tr><td>${esc(p.gpin)}</td><td>${esc(p.prop_class || "–")}${p.acreage != null ? ` · ${esc(fmtNum(p.acreage))} ac` : ""}</td><td>${esc(FLOOD_SHORT[p.parcel_flood_class] || p.parcel_flood_class || "–")}</td>${valued.length ? `<td>${p.total_value != null ? `${money(p.total_value)} <span class="muted small">(land ${money(p.land_value)} · improvements ${money(p.improvement_value)})</span>${p.est_tax != null ? (p.est_tax === 0 && p.taxable_value === 0 ? '<br><span class="small">exempt — no tax bill</span>' : `<br><span class="small">est. FY${esc(p.tax_year)} tax ${money(p.est_tax)} <span class="muted">at $${esc(p.est_tax_rate)}/$100, base rate</span></span>`) : ""}` : '<span class="muted">not published</span>'}</td>` : ""}</tr>`).join("");
     const v0 = valued[0] || {};
     const confirmed = v0.tax_year_status === "confirmed" && v0.tax_year;
     const valueHead = confirmed ? `Assessed value (FY${esc(v0.tax_year)})` : "Assessed value (tax year unconfirmed)";
     const valueNote = !valued.length ? "" : confirmed
-      ? `<p class="muted small">Assessed values from ${esc(v0.value_source || "the city")}, FY${esc(v0.tax_year)} (effective ${esc(v0.value_vintage)}); condo units on one parcel are summed. No tax bill is shown.</p>`
+      ? `<p class="muted small">Assessed values from ${esc(v0.value_source || "the city")}, FY${esc(v0.tax_year)} (effective ${esc(v0.value_vintage)}); condo units on one parcel are summed.${valued.some((p) => p.est_tax != null) ? " Estimated bills use the adopted base rate only: district add-ons, tax relief and credits are not included, and the Treasurer's bill is authoritative." : " No tax bill is shown."}</p>`
       : `<p class="muted small">Assessed values from ${esc(v0.value_source || "a regional source")}${v0.value_vintage ? ` (refreshed ${esc(v0.value_vintage)})` : ""}. Tax year not stated by the source, so no tax bill is shown; the city's assessment record stays authoritative.</p>`;
     const recs = (c.development_records || []).map((r) =>
       `<li>${esc(r.record_id)} · ${esc(r.record_type || "")} · ${esc(r.status || "")}${r.submitted_date ? ` · submitted ${esc(r.submitted_date)}` : ""}${r.approved_date ? ` · approved ${esc(r.approved_date)}` : ""}</li>`).join("");

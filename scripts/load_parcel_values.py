@@ -45,7 +45,11 @@ FIPS = {"chesapeake": "550", "portsmouth": "740"}  # HRGEO's 3-digit county code
 # Portsmouth's parcels are keyed by their tax-map number (parcel load from this same layer)
 KEY_FIELD = {"chesapeake": "PARCELID", "portsmouth": "TAXMAPNO"}
 ROLLS = {"norfolk": "https://data.norfolk.gov/resource/qva7-tzrf.json"}  # Property Assessment and Sales - FY27
-ROLL_FIELDS = ("parcel_id", "gpin", "extension", "current_land_value", "current_improvement_value",
+# Norfolk's exempt owners (federal, city, schools, churches, ...) are the 6xx property classes: their
+# share of the FY2027 roll (32.1%) matches the budget's 31.99% exempt figure (FiscalMapIQ docs)
+EXEMPT_CLASS_PREFIX = {"norfolk": "6"}
+ROLL_FIELDS = ("parcel_id", "gpin", "extension", "property_class_description", "current_land_value",
+               "current_improvement_value",
                "current_total_value", "effective_year")
 ROLL_PAGE = 50000
 # a city's own parcel layer carrying its "current" land / improvement values (no total field and no
@@ -56,7 +60,7 @@ ROLL_PAGE = 50000
 # Current = FY2027, effective July 1, 2026. The layer also holds owner and mailing fields, never requested.
 CITY_LAYERS = {"newport_news": {"url": "https://maps.nnva.gov/gis/rest/services/Operational/Parcel/MapServer/0",
                                 "key": "PARCELID", "land": "CNTLNDVAL", "impr": "CNTIMPVAL",
-                                "tax_year": 2027, "effective": "2026-07-01"}}
+                                "gov": "GOVERNMENT", "tax_year": 2027, "effective": "2026-07-01"}}
 LOCALITIES = sorted({*FIPS, *ROLLS, *CITY_LAYERS})
 FIELDS = ("FIPS", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
 
@@ -76,7 +80,8 @@ def normalize(features: list[dict], stats: Counter, key: str = "PARCELID") -> tu
             stats["no_parcel_id"] += 1
             continue
         row = {"gpin": gpin, "land_value": _num(p.get("LNDVALUE")),
-               "improvement_value": _num(p.get("IMPVALUE")), "total_value": _num(p.get("TOTVALUE"))}
+               "improvement_value": _num(p.get("IMPVALUE")), "total_value": _num(p.get("TOTVALUE")),
+               "taxable_value": _num(p.get("TAXABLE"))}  # only where the source marks exempt property
         vals = (row["land_value"], row["improvement_value"], row["total_value"])
         if any(v is not None and v < 0 for v in vals):
             stats["negative_value"] += 1
@@ -129,13 +134,15 @@ def read_roll(locality: str, stats: Counter) -> tuple[list[dict], dict]:
     if eff[5:] != "07-01":
         raise ValueError(f"{locality} roll: effective date {eff} is not a July 1 fiscal-year start")
     accounts: dict[str, dict] = {}
+    prefix = EXEMPT_CLASS_PREFIX.get(locality)
     for r in raw:
         key = str(r.get("parcel_id") or "")
+        exempt = bool(prefix) and str(r.get("property_class_description") or "").startswith(prefix)
         vals = (str(r.get("gpin") or ""), _dec(r.get("current_land_value")),
                 _dec(r.get("current_improvement_value")), _dec(r.get("current_total_value")))
         prev = accounts.get(key)
         if prev is None:
-            accounts[key] = {"vals": vals}
+            accounts[key] = {"vals": vals, "exempt": exempt}
         elif prev["vals"] != vals:
             raise ValueError(f"{locality} roll: account {key} has rows with different values")
         else:
@@ -149,9 +156,13 @@ def read_roll(locality: str, stats: Counter) -> tuple[list[dict], dict]:
         if total is not None and land is not None and abs(land + (impr or 0) - total) >= 1:
             stats["land_plus_improvement_not_total"] += 1
         row = by.setdefault(gpin, {"gpin": gpin, "land_value": 0.0, "improvement_value": 0.0, "total_value": 0.0,
-                                   "accounts": 0})
+                                   "taxable_value": 0.0 if prefix else None, "accounts": 0})
         row["accounts"] += 1
-        for k, v in (("land_value", land), ("improvement_value", impr), ("total_value", total)):
+        if a["exempt"]:
+            stats["exempt_accounts"] += 1
+        taxable = None if not prefix else 0.0 if a["exempt"] else total
+        for k, v in (("land_value", land), ("improvement_value", impr), ("total_value", total),
+                     *((("taxable_value", taxable),) if prefix else ())):
             row[k] = None if v is None or row[k] is None else row[k] + v
     stats["accounts"] = len(accounts)
     stats["gpins_with_several_accounts"] = sum(1 for r in by.values() if r["accounts"] > 1)
@@ -179,18 +190,21 @@ def read_city_layer(locality: str, stats: Counter) -> tuple[list[dict], dict]:
     c = CITY_LAYERS[locality]
     meta = fetch_json(c["url"], {"f": "json"})
     names = {f.get("name", "") for f in meta.get("fields", [])}
-    missing = [f for f in (c["key"], c["land"], c["impr"], "LASTUPDATE") if f not in names]
+    wanted = (c["key"], c["land"], c["impr"], *((c["gov"],) if c.get("gov") else ()), "LASTUPDATE")
+    missing = [f for f in wanted if f not in names]
     if missing:
         raise ValueError(f"{locality}: fields {missing} are missing from the source")
     raw = arcgis.fetch_all_by_ids(fetch_json, c["url"], "1=1",
-                                  out_fields=",".join(("OBJECTID", c["key"], c["land"], c["impr"], "LASTUPDATE")),
+                                  out_fields=",".join(("OBJECTID", *wanted)),
                                   label=f"{locality} values", geometry=False, batch=1000)
     feats = []
     for f in raw:  # the city publishes land and improvements; their sum is the total
         p = dict(f.get("properties") or {})
         land, impr = _num(p.get(c["land"])), _num(p.get(c["impr"]))
-        p.update(LNDVALUE=land, IMPVALUE=impr, TOTVALUE=None if land is None and impr is None
-                 else (land or 0) + (impr or 0))
+        total = None if land is None and impr is None else (land or 0) + (impr or 0)
+        p.update(LNDVALUE=land, IMPVALUE=impr, TOTVALUE=total)
+        if c.get("gov"):  # government-owned parcels are exempt
+            p["TAXABLE"] = 0.0 if p.get(c["gov"]) == "Y" else total
         feats.append({"properties": p})
     rows, refreshed = normalize(feats, stats, c["key"])
     stats["layer_refreshed_" + str(refreshed)] = 1
@@ -235,9 +249,11 @@ def load(conn, locality: str, dry_run: bool) -> str:
         (locality, src["source_url"], src["expected"], src["received"], len(rows), matched, plid, h, vintage,
          json.dumps(dict(stats)), db_module.now_iso())).lastrowid
     conn.executemany(
-        "INSERT INTO parcel_values (load_id, locality, gpin, land_value, improvement_value, total_value, tax_year, "
-        "tax_year_status) VALUES (?,?,?,?,?,?,?,?)",
-        [(load_id, locality, r["gpin"], r["land_value"], r["improvement_value"], r["total_value"], src["tax_year"],
+        "INSERT INTO parcel_values (load_id, locality, gpin, land_value, improvement_value, total_value, "
+        "taxable_value, tax_year, "
+        "tax_year_status) VALUES (?,?,?,?,?,?,?,?,?)",
+        [(load_id, locality, r["gpin"], r["land_value"], r["improvement_value"], r["total_value"],
+          r.get("taxable_value"), src["tax_year"],
           src["status"]) for r in rows])
     print(f"  activated load {load_id}")
     return "loaded"

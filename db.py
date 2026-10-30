@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -2066,6 +2066,17 @@ def init_db(db_path: Path | str | None = None) -> None:
             conn.execute("""CREATE VIEW IF NOT EXISTS parcel_values_effective AS
                 SELECT v.locality, v.gpin, v.land_value, v.improvement_value, v.total_value, v.tax_year,
                        v.tax_year_status, l.source_vintage, l.source_url, l.load_id
+                FROM parcel_values v JOIN parcel_value_loads l ON l.load_id = v.load_id AND l.is_active = 1""")
+        if current_version < 27:
+            # the value that is taxed: total minus exempt accounts (Norfolk's 6xx classes) or zero for
+            # government-owned parcels (Newport News); NULL where the source marks no exemption
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(parcel_values)")}
+            if "taxable_value" not in cols:
+                conn.execute("ALTER TABLE parcel_values ADD COLUMN taxable_value REAL")
+            conn.execute("DROP VIEW IF EXISTS parcel_values_effective")
+            conn.execute("""CREATE VIEW parcel_values_effective AS
+                SELECT v.locality, v.gpin, v.land_value, v.improvement_value, v.total_value, v.taxable_value,
+                       v.tax_year, v.tax_year_status, l.source_vintage, l.source_url, l.load_id
                 FROM parcel_values v JOIN parcel_value_loads l ON l.load_id = v.load_id AND l.is_active = 1""")
         if current_version < 20:
             # public-hearing testimony as counts only (speakers' names / addresses are never stored)

@@ -98,6 +98,7 @@ def test_case_parcels_show_values_of_the_same_city_only(env, monkeypatch):
     with db_module.db_readonly(env["db"]) as conn:
         got = {p["gpin"]: p for p in app_module._exact_parcels(conn, ["0940000000293", "0940000000290"])}
     assert got["0940000000293"]["total_value"] == 572500 and got["0940000000293"]["tax_year_status"] == "unconfirmed"
+    assert got["0940000000293"]["est_tax"] is None  # no estimate without a confirmed tax year
     assert got["0940000000290"]["total_value"] is None
 
 
@@ -107,13 +108,16 @@ def test_card_labels_values_and_shows_no_tax_bill():
 
 
 ROLL = [  # synthetic Norfolk roll rows: a 3-building account repeats its value; two condo units share a GPIN
-    {"parcel_id": "11605", "gpin": "1448671584", "extension": f"C0{i}", "current_land_value": "897400",
+    {"parcel_id": "11605", "gpin": "1448671584", "extension": f"C0{i}", "property_class_description": "405 Apartment",
+     "current_land_value": "897400",
      "current_improvement_value": "6118200", "current_total_value": "7015600",
      "effective_year": "2026-07-01T00:00:00.000"} for i in (1, 2, 3)
 ] + [
-    {"parcel_id": "312500", "gpin": "1429682282", "extension": "R02", "current_land_value": "50000",
+    {"parcel_id": "312500", "gpin": "1429682282", "extension": "R02", "property_class_description": "556 Res Condo",
+     "current_land_value": "50000",
      "current_improvement_value": "201600", "current_total_value": "251600", "effective_year": "2026-07-01T00:00:00.000"},
-    {"parcel_id": "1776000", "gpin": "1429682282", "extension": "R02", "current_land_value": "40000",
+    {"parcel_id": "1776000", "gpin": "1429682282", "extension": "R02",
+     "property_class_description": "611 Norfolk General Municipal", "current_land_value": "40000",
      "current_improvement_value": "149900", "current_total_value": "189900", "effective_year": "2026-07-01T00:00:00.000"},
     {"parcel_id": "99", "gpin": None, "extension": "R01", "current_land_value": "1", "current_improvement_value": "1",
      "current_total_value": "2", "effective_year": "2026-07-01T00:00:00.000"},
@@ -145,9 +149,17 @@ def test_norfolk_roll_one_value_per_account_summed_per_gpin_confirmed_fy2027(env
         stats = json.loads(conn.execute("SELECT stats_json FROM parcel_value_loads").fetchone()[0])
     assert rows["1448671584"]["total_value"] == 7015600  # not 3x
     assert rows["1429682282"]["total_value"] == 251600 + 189900  # two condo accounts
+    assert rows["1429682282"]["taxable_value"] == 251600  # the 6xx (exempt-owner) account is not taxed
+    assert rows["1448671584"]["taxable_value"] == 7015600
     assert all(r["tax_year"] == 2027 and r["tax_year_status"] == "confirmed" for r in rows.values())
     assert rows["1448671584"]["source_vintage"] == "2026-07-01"
     assert stats["account_without_gpin"] == 1 and stats["building_rows_repeating_account"] == 2
+    assert stats["exempt_accounts"] == 1
+    import app as app_module
+    with db_module.db_readonly(env["db"]) as conn:
+        got = {p["gpin"]: p for p in app_module._exact_parcels(conn, ["1448671584", "1429682282"])}
+    assert got["1448671584"]["est_tax"] == round(7015600 * 1.23 / 100, 2)  # FY2027 base rate $1.23
+    assert got["1429682282"]["est_tax"] == round(251600 * 1.23 / 100, 2)
 
 
 def test_norfolk_roll_refuses_disagreeing_account_or_mixed_years(env, monkeypatch):
@@ -186,13 +198,14 @@ def test_newport_news_current_values_from_the_city_layer(env, monkeypatch):
     seen = []
     nn = [{"type": "Feature", "id": 70 + i, "geometry": None,
            "properties": {"OBJECTID": 70 + i, "PARCELID": pid, "CNTLNDVAL": land, "CNTIMPVAL": impr,
-                          "PRVLNDVAL": 1, "PRVIMPVAL": 1, "LASTUPDATE": 1792605279000, "OWNERNME1": "Jane Q Public"}}
-          for i, (pid, land, impr) in enumerate((("294020532", 37000, 171000), ("294010337", 18500, 0)))]
+                          "PRVLNDVAL": 1, "PRVIMPVAL": 1, "GOVERNMENT": gov, "LASTUPDATE": 1792605279000,
+                          "OWNERNME1": "Jane Q Public"}}
+          for i, (pid, land, impr, gov) in enumerate((("294020532", 37000, 171000, "N"), ("294010337", 18500, 0, "Y")))]
 
     def fetch(url, params=None, **kw):
         if not url.endswith("/query"):
             return {"fields": [{"name": n} for n in ("OBJECTID", "PARCELID", "CNTLNDVAL", "CNTIMPVAL", "PRVLNDVAL",
-                                                     "PRVIMPVAL", "LASTUPDATE", "OWNERNME1")]}
+                                                     "PRVIMPVAL", "GOVERNMENT", "LASTUPDATE", "OWNERNME1")]}
         seen.append(params)
         if params.get("returnCountOnly"):
             return {"count": len(nn)}
@@ -211,3 +224,8 @@ def test_newport_news_current_values_from_the_city_layer(env, monkeypatch):
     assert rows["294020532"]["total_value"] == 208000 and rows["294010337"]["total_value"] == 18500
     assert all(r["tax_year"] == 2027 and r["tax_year_status"] == "confirmed" for r in rows.values())
     assert {r["source_vintage"] for r in rows.values()} == {"2026-07-01"}  # the effective date, not the refresh
+    assert rows["294020532"]["taxable_value"] == 208000 and rows["294010337"]["taxable_value"] == 0  # government
+    import app as app_module
+    with db_module.db_readonly(env["db"]) as conn:
+        got = {p["gpin"]: p for p in app_module._exact_parcels(conn, ["294020532", "294010337"])}
+    assert got["294020532"]["est_tax"] == round(208000 * 1.18 / 100, 2) and got["294010337"]["est_tax"] == 0

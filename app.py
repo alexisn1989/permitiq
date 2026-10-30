@@ -986,13 +986,29 @@ VALUE_SOURCES = {
 }
 
 
+# adopted general real estate rates per $100 (city, fiscal year): base rate only -- district
+# add-ons (Norfolk Downtown Improvement District, Virginia Beach SSDs) and tax relief are not
+# applied. Sources: Norfolk ordinance R-6 (2026-05-12); Newport News Ordinance 8160-26
+# (2026-05-12); Virginia Beach FY2027 budget adopted 2026-05-12 (FiscalMapIQ pipelines/tax_rates.py).
+TAX_RATES = {("norfolk", 2027): 1.23, ("newport_news", 2027): 1.18, ("virginia_beach", 2027): 0.97}
+
+
+def estimated_tax(row: dict) -> Optional[float]:
+    """Base-rate bill for one parcel: only for a confirmed tax year with an adopted rate and a taxable
+    value the source supports (exempt parcels give 0); otherwise None."""
+    rate = TAX_RATES.get((row.get("locality"), row.get("tax_year")))
+    if row.get("tax_year_status") != "confirmed" or rate is None or row.get("taxable_value") is None:
+        return None
+    return round(row["taxable_value"] * rate / 100, 2)
+
+
 def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
     """Parcels of the active loads by their exact parcel id (already linked; no GPIN10 fallback), with the
     assessed value of the same city's active value load when there is one, and who published it."""
     rows = [dict(r) for r in conn.execute(
         "SELECT p.gpin, l.locality, p.zoning, p.prop_class, p.prop_address, ROUND(p.tax_area_sqft / 43560.0, 4) AS acreage, "
         "(p.minx + p.maxx) / 2 AS lng, (p.miny + p.maxy) / 2 AS lat, pf.parcel_flood_class, pf.share_sfha_v, "
-        "pf.share_sfha_a, pf.share_shaded_x, pv.total_value, pv.land_value, pv.improvement_value, "
+        "pf.share_sfha_a, pf.share_shaded_x, pv.total_value, pv.land_value, pv.improvement_value, pv.taxable_value, "
         "pv.tax_year, pv.tax_year_status, pv.source_vintage AS value_vintage "
         "FROM json_each(?) g JOIN parcels p ON p.gpin = g.value "
         "JOIN parcel_loads l ON l.load_id = p.load_id AND l.is_active = 1 "
@@ -1001,6 +1017,8 @@ def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
         "ORDER BY p.gpin LIMIT 25", (json.dumps(gpins),))]
     for r in rows:
         r["value_source"] = VALUE_SOURCES.get(r["locality"]) if r["total_value"] is not None else None
+        r["est_tax"] = estimated_tax(r)
+        r["est_tax_rate"] = TAX_RATES.get((r["locality"], r["tax_year"])) if r["est_tax"] is not None else None
     return rows
 
 

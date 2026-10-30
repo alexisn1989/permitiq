@@ -625,6 +625,14 @@ python scripts/tag_parcel_constraints.py --locality norfolk
 - **Read 2026-10-30:** 92,498 features → 92,403 parcels (95 exact duplicate rows collapsed), 92,316 with a value, $47.52B; refreshed 2026-02-27. 92,335 of the 92,708 Chesapeake parcels match by id.
 - **Shown on Chesapeake case cards** as "Assessed value (tax year unconfirmed)", with land and improvements. The source states no tax year, so `tax_year` stays NULL (`tax_year_status = 'unconfirmed'`) and **no tax bill is computed or shown**. Values attach only to the same city's parcels.
 
+### Estimated FY2027 tax bills (Norfolk, Newport News; base rate only)
+
+- **Where:** Norfolk and Newport News case cards show, next to the assessed value, "est. FY2027 tax $X at $R/$100, base rate". Exempt parcels say "exempt — no tax bill". Cities without a confirmed tax year (Chesapeake, Portsmouth) show no estimate.
+- **How:** `estimated_tax()` in `app.py` = taxable value × the adopted FY2027 rate ÷ 100, only when the value's tax year is confirmed and a rate for that year is listed in `TAX_RATES` (Norfolk $1.23, ordinance R-6; Newport News $1.18, Ordinance 8160-26; Virginia Beach $0.97, FY2027 budget).
+- **Taxable value (schema v27, `parcel_values.taxable_value`):** Norfolk — the parcel's accounts minus the 6xx exempt-owner classes (4,265 exempt accounts; taxable $30.39B, matching the budget-implied $30.54B at 99.5%); Newport News — zero where the city flags `GOVERNMENT = 'Y'` (1,265 parcels; taxable $26.21B). Base-rate levy totals: Norfolk $373.7M, Newport News $309.3M.
+- **Not included:** district add-ons (Norfolk Downtown Improvement District +$0.16, Virginia Beach special service districts), tax relief, credits and exemptions not marked in the source. The card says so; the Treasurer's bill is authoritative.
+- Virginia Beach's FY2027 values are in the FiscalMapIQ Neon database, not PermitIQ, so its cards show no estimate yet.
+
 ### Newport News assessed values (the city's parcel layer, current values)
 
 - **Source:** the City of Newport News parcel layer (`maps.nnva.gov`, `Operational/Parcel/MapServer/0`), which carries **Previous** and **Current** land and improvement values. PermitIQ reads Current (`CNTLNDVAL` + `CNTIMPVAL`; the layer has no total field) by `PARCELID`. Owner and mailing fields are never requested. `python scripts/load_parcel_values.py --locality newport_news`.
