@@ -208,3 +208,58 @@ def test_object_id_keys_are_not_ordinance_numbers():
     # an address links only on the day the case took effect: another CUP at the same address is another case
     assert CV.case_ids("CUP at 9633 19th Bay Street", known, "norfolk", "2024-04-23") == ["NF-CUP-49563"]
     assert CV.case_ids("CUP at 9633 19th Bay Street", known, "norfolk", "2025-01-14") == []
+
+
+# ---------- Portsmouth layout; v21 widens the result CHECK ----------
+
+def test_portsmouth_layout_deferred_denied_and_dates(env, tmp_path):
+    import csv
+    def w(name, cols, rows):
+        with (tmp_path / name).open("w", newline="", encoding="utf-8") as fh:
+            wr = csv.DictWriter(fh, fieldnames=cols)
+            wr.writeheader()
+            wr.writerows(rows)
+    who = {"Alpha": "yes", "Bravo": "yes", "Charlie": "no"}
+    vrows = [{"id": str(i), "doc_id": "D1", "meeting_date": date, "title": f"{m} Z-24-03 rezoning", "agenda_item": str(i),
+              "motion": m, "moved_by": "Alpha", "seconded_by": "Bravo", "result": res, "vote_count": "2-1",
+              "votes_json": json.dumps(who), "category": "substantive", "scraped_at": "x"}
+             for i, (m, res, date) in enumerate((("Deny", "denied", "02/24/2026"), ("Defer", "deferred", "02/27-28/2026")), 1)]
+    mrows = [{"id": f"{v['id']}-{k}", "vote_id": v["id"], "doc_id": "D1", "meeting_date": v["meeting_date"],
+              "member_name": k, "vote": x, "agenda_item": v["agenda_item"], "title": v["title"], "result": v["result"],
+              "category": "substantive"} for v in vrows for k, x in who.items()]
+    w("portsmouth_council_votes.csv", CV.PT_VOTE_COLUMNS, vrows)
+    w("portsmouth_council_member_votes.csv", CV.PT_MEMBER_VOTE_COLUMNS, mrows)
+    w("portsmouth_council_members.csv", CV.MEMBER_COLUMNS, [{"id": "1", "name": "Pat Alpha", "district": "Mayor",
+      "district_num": "0", "email": "", "jurisdiction": "Portsmouth", "scraped_date": "2026-07-06"}])
+    w("portsmouth_upcoming_agenda.csv", CV.PT_AGENDA_COLUMNS, [])
+    assert lcv.main(["--locality", "portsmouth", "--dir", str(tmp_path), "--reports-dir", str(env["reports"])]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["vote_id"]: dict(r) for r in conn.execute("SELECT * FROM council_votes_effective")}
+    assert (rows["1"]["result"], rows["1"]["motion_kind"], rows["1"]["meeting_date"]) == ("denied", "deny", "2026-02-24")
+    assert (rows["2"]["result"], rows["2"]["motion_kind"], rows["2"]["meeting_date"]) == ("deferred", "continue", None)
+    assert CV.vote_outcome(rows["1"]) == "not_approved" and rows["1"]["case_ids_json"] == "[]"  # no Portsmouth cases
+
+
+def test_v20_to_v21_keeps_council_votes(env, tmp_path):
+    import sqlite3
+    assert _load(env, _write(tmp_path, [_vote(1, "Approval of PLN-REZ-2025-901")])) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        before = [tuple(r) for r in conn.execute("SELECT * FROM council_votes ORDER BY vote_id")]
+    conn = sqlite3.connect(env["db"])
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'council_votes'").fetchone()[0]
+    view = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'council_votes_effective'").fetchone()[0]
+    conn.execute("DROP VIEW council_votes_effective")
+    conn.execute("ALTER TABLE council_votes RENAME TO cv_old")
+    conn.execute(sql.replace(",'deferred','denied'", ""))  # the v16 CHECK
+    conn.execute("INSERT INTO council_votes SELECT * FROM cv_old")
+    conn.execute("DROP TABLE cv_old")
+    conn.execute(view)
+    conn.execute("PRAGMA user_version=20")
+    conn.commit()
+    conn.close()
+    db_module.init_db(env["db"])
+    with db_module.db_readonly(env["db"]) as conn:
+        assert [tuple(r) for r in conn.execute("SELECT * FROM council_votes ORDER BY vote_id")] == before
+        assert "'deferred'" in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'council_votes'").fetchone()[0]
+        assert conn.execute("SELECT COUNT(*) FROM council_votes_effective").fetchone()[0] == 1

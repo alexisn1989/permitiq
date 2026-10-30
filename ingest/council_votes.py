@@ -54,6 +54,14 @@ NF_AGENDA_COLUMNS = ("id", "meeting_id", "meeting_date", "item_ref", "title", "s
 NF_TESTIMONY_COLUMNS = ("id", "meeting_date", "agenda_item", "speaker_name", "speaker_addr", "stance", "note",
                         "scraped_at", "ward", "superward", "lat", "lon", "geocode_source")
 STANCES = ("support", "oppose", "comment", "present")
+# Portsmouth (VoteIQ export 2026-10-30): doc_id instead of a meeting / clip id, dates "02/24/2026"; a passed
+# Defer / Deny motion's result is published as "deferred" / "denied". Its agenda file has no coordinates.
+PT_VOTE_COLUMNS = ("id", "doc_id", "meeting_date", "title", "agenda_item", "motion", "moved_by", "seconded_by",
+                   "result", "vote_count", "votes_json", "category", "scraped_at")
+PT_MEMBER_VOTE_COLUMNS = ("id", "vote_id", "doc_id", "meeting_date", "member_name", "vote", "agenda_item", "title",
+                          "result", "category")
+PT_AGENDA_COLUMNS = ("id", "event_id", "meeting_date", "item_ref", "section", "title", "category", "agenda_url",
+                     "how_to_participate", "scraped_at")
 LAYOUTS = {
     "chesapeake": {"files": FILES, "source": SOURCE, "approve": _APPROVE, "deny": _DENY, "continue": _CONTINUE,
                    "aliases": MEMBER_ALIASES, "meeting_field": "clip_id"},
@@ -67,6 +75,13 @@ LAYOUTS = {
                 "deny": {"deny"},
                 "continue": {"continue", "continued", "continue generally", "continued generally"},
                 "aliases": {"Smigiel": "Smigiel Jr.", "Thomas": "Thomas Jr."}, "meeting_field": "meeting_id"},
+    "portsmouth": {"files": {"votes": ("portsmouth_council_votes.csv", PT_VOTE_COLUMNS),
+                             "member_votes": ("portsmouth_council_member_votes.csv", PT_MEMBER_VOTE_COLUMNS),
+                             "members": ("portsmouth_council_members.csv", MEMBER_COLUMNS),
+                             "agenda": ("portsmouth_upcoming_agenda.csv", PT_AGENDA_COLUMNS)},
+                   "source": "VoteIQ export of Portsmouth City Council meetings",
+                   "approve": {"adopt", "approve"}, "deny": {"deny"}, "continue": {"defer"},
+                   "aliases": {}, "meeting_field": "doc_id"},
 }
 
 # modern case numbers are distinctive; the older short forms (UP-10-01, S-12-34) count
@@ -99,7 +114,7 @@ def motion_kind(motion: str | None, locality: str = "chesapeake") -> str:
 
 
 def meeting_date(raw: str | None) -> str | None:
-    for fmt in ("%b %d, %Y", "%B %d, %Y"):  # "Apr 14, 2026" (Chesapeake), "MARCH 25, 2025" (Norfolk)
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y"):  # "Apr 14, 2026", "MARCH 25, 2025", "02/24/2026" (Portsmouth)
         try:
             return datetime.strptime((raw or "").strip(), fmt).date().isoformat()
         except ValueError:
@@ -166,7 +181,7 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
     for r in raw["votes"]:
         if r["id"] in votes:
             problems.append(f"vote id {r['id']} twice")
-        if r["result"] not in ("passed", "failed", "tabled", "withdrawn"):
+        if r["result"] not in ("passed", "failed", "tabled", "withdrawn", "deferred", "denied"):
             problems.append(f"vote {r['id']}: result {r['result']!r} not seen before")
         try:
             listed = json.loads(r["votes_json"])
@@ -237,7 +252,7 @@ def vote_outcome(v: dict) -> str | None:
         return "approved"
     if v["motion_kind"] == "approve" and v["result"] == "failed":
         return "not_approved"
-    if v["motion_kind"] == "deny" and v["result"] == "passed":
+    if v["motion_kind"] == "deny" and v["result"] in ("passed", "denied"):  # "denied": Portsmouth's word for it
         return "not_approved"
     return None
 
