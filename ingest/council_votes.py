@@ -98,6 +98,20 @@ LAYOUTS = {
                 "deny": {"deny", "denied"}, "continue": {"continue", "continued", "postponed"},
                 "aliases": {"Barlow": "Butler Barlow"}, "meeting_field": "meeting_id", "exceptions_only": True},
 }
+# Hampton (VoteIQ export 2026-10-30): full roll calls; Chesapeake's columns with meeting_id; dates "3/12/2025"
+HT_VOTE_COLUMNS = ("id", "meeting_id", "meeting_date", "title", "agenda_item", "motion", "moved_by", "seconded_by",
+                   "result", "vote_count", "votes_json", "category", "scraped_at")
+HT_MEMBER_VOTE_COLUMNS = SF_MEMBER_VOTE_COLUMNS
+LAYOUTS["hampton"] = {
+    "files": {"votes": ("hampton_council_votes.csv", HT_VOTE_COLUMNS),
+              "member_votes": ("hampton_council_member_votes.csv", HT_MEMBER_VOTE_COLUMNS),
+              "members": ("hampton_council_members.csv", MEMBER_COLUMNS),
+              "agenda": ("hampton_upcoming_agenda.csv", AGENDA_COLUMNS)},
+    "source": "VoteIQ export of Hampton City Council meetings",
+    "approve": {"approve", "approved", "adopt", "approve and adopt", "approve with 16 conditions",
+                "approve with eleven conditions"},
+    "deny": {"deny"}, "continue": {"defer", "deferred", "defer use permits"},
+    "aliases": {}, "meeting_field": "meeting_id"}
 EXCEPTIONS_ONLY = {k for k, v in LAYOUTS.items() if v.get("exceptions_only")}
 
 

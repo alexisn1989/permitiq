@@ -327,3 +327,11 @@ def test_exceptions_only_contradiction_is_flagged_not_fatal():
     v = data["votes"][0]
     assert v["source_conflict"] == 1 and (v["yes"], v["no"], v["absent"]) == (8, 0, 1)  # kept as published
     assert data["member_votes"] == [{"vote_id": "1061", "member": "Williams", "member_raw": "Williams", "vote": "absent"}]
+
+
+def test_hampton_layout():
+    assert CV.meeting_date("3/12/2025") == "2025-03-12" and CV.meeting_date("12/1/2025") == "2025-12-01"
+    assert CV.motion_kind("Approve with eleven conditions", "hampton") == "approve"
+    assert CV.motion_kind("Defer Use Permits", "hampton") == "continue"
+    assert CV.motion_kind("Defer Appointment", "hampton") == "other"  # not a land-use continuance
+    assert CV.LAYOUTS["hampton"]["files"]["members"][1] == CV.MEMBER_COLUMNS  # emails read, never stored
