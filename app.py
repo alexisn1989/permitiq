@@ -1079,7 +1079,7 @@ def _vote_out(conn, v: dict) -> dict:
                                                                    (v["agenda_item"] or "").strip())).fetchone()
     return {k: v[k] for k in ("vote_id", "meeting_date", "agenda_item", "title", "motion", "motion_kind", "moved_by",
                               "seconded_by", "result", "yes", "no", "abstain", "absent", "printed_tally",
-                              "tally_mismatch", "category")} | {"case_ids": json.loads(v["case_ids_json"]),
+                              "tally_mismatch", "category", "source_conflict")} | {"case_ids": json.loads(v["case_ids_json"]),
                                                                 "members": members,
                                                                 "members_exceptions_only":
                                                                     v["locality"] in council_votes_mod.EXCEPTIONS_ONLY,

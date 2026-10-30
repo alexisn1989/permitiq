@@ -99,11 +99,11 @@ def main(argv=None) -> int:
             conn.executemany(
                 "INSERT INTO council_votes (load_id, vote_id, clip_id, meeting_date, agenda_item, title, motion, "
                 "motion_kind, moved_by, seconded_by, result, yes, no, abstain, absent, printed_tally, tally_mismatch, "
-                "category, case_ids_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "category, case_ids_json, source_conflict) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(load_id, v["vote_id"], v["clip_id"], v["meeting_date"], v["agenda_item"], v["title"], v["motion"],
                   v["motion_kind"], v["moved_by"], v["seconded_by"], v["result"], v["yes"], v["no"], v["abstain"],
-                  v["absent"], v["printed_tally"], v["tally_mismatch"], v["category"], json.dumps(v["case_ids"]))
-                 for v in data["votes"]])
+                  v["absent"], v["printed_tally"], v["tally_mismatch"], v["category"], json.dumps(v["case_ids"]),
+                  v["source_conflict"]) for v in data["votes"]])
             conn.executemany("INSERT INTO council_member_votes (load_id, vote_id, member, member_raw, vote) "
                              "VALUES (?,?,?,?,?)", [(load_id, m["vote_id"], m["member"], m["member_raw"], m["vote"])
                                                     for m in data["member_votes"]])
@@ -128,6 +128,16 @@ def main(argv=None) -> int:
         w = csv.writer(fh)
         w.writerow(REVIEW_COLUMNS)
         w.writerows(review)
+    conflicts = [v for v in data["votes"] if v["source_conflict"]]
+    if conflicts:
+        cpath = args.reports_dir / f"council_source_conflicts_{args.locality}.csv"
+        with cpath.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(("vote_id", "meeting_date", "title", "result", "printed_tally", "members_listed"))
+            w.writerows((v["vote_id"], v["meeting_date"], v["title"], v["result"], v["printed_tally"],
+                         "; ".join(f"{m['member']} {m['vote']}" for m in data["member_votes"] if m["vote_id"] == v["vote_id"]))
+                        for v in conflicts)
+        print(f"{len(conflicts)} vote(s) whose own records disagree, kept as published and flagged -> {cpath}")
     print(f"cases named by Council votes: {dict(sorted(checks.items()))}; disagreements listed -> {path}")
     return 0
 

@@ -224,9 +224,13 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
         if name in v["members"]:
             problems.append(f"vote {m['vote_id']}: {name} listed twice")
         v["members"][name] = (m["vote"], m["member_name"])
+    conflicts = set()
     for vid, v in votes.items():
         if {k: x[0] for k, x in v["members"].items()} != v["listed"]:
-            problems.append(f"vote {vid}: member rows differ from votes_json")
+            if locality in EXCEPTIONS_ONLY:  # kept as published and flagged (user decision 2026-10-30, Suffolk vote 1061)
+                conflicts.add(vid)
+            else:
+                problems.append(f"vote {vid}: member rows differ from votes_json")
     if problems:
         raise ExportError(f"{len(problems)} problem(s): {problems[:8]}")
     out_votes, out_members = [], []
@@ -244,7 +248,7 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
             "printed_tally": r["vote_count"] or None,
             "tally_mismatch": (int(printed_tally(r["vote_count"]) is None) if locality in EXCEPTIONS_ONLY else
                                int(bool(r["vote_count"]) and r["vote_count"] != f"{tally['yes']}-{tally['no']}")),
-            "category": r["category"] or None,
+            "category": r["category"] or None, "source_conflict": int(vid in conflicts),
             "case_ids": case_ids(f"{r['title']} {r['agenda_item']}", known_cases, locality,
                                  meeting_date(r["meeting_date"]))})
         out_members += [{"vote_id": vid, "member": k, "member_raw": raw_name, "vote": x}

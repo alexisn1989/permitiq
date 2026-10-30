@@ -304,7 +304,7 @@
       const tally = `${v.yes}–${v.no}${v.abstain ? `, ${v.abstain} abstain` : ""}${v.absent ? `, ${v.absent} absent` : ""}`;
       const t = v.testimony;
       const spoke = t ? `<br><span class="muted small">Public hearing speakers: ${esc(t.support)} support, ${esc(t.oppose)} oppose, ${esc(t.comment)} comment${t.present ? `, ${esc(t.present)} present` : ""} (names not shown)</span>` : "";
-      return `<li><b>${esc(v.meeting_date || "date not recorded")}</b> · ${esc(v.motion || "motion")} · ${esc(v.result)} ${esc(tally)}${v.tally_mismatch ? ` <span class="muted small">(printed tally ${esc(v.printed_tally)} differs from the members' votes)</span>` : ""}<br><span class="muted small">${who}</span>${spoke}</li>`;
+      return `<li><b>${esc(v.meeting_date || "date not recorded")}</b> · ${esc(v.motion || "motion")} · ${esc(v.result)} ${esc(tally)}${v.tally_mismatch ? ` <span class="muted small">(printed tally ${esc(v.printed_tally)} differs from the members' votes)</span>` : ""}${v.source_conflict ? ` <span class="warn small">(the source's records for this vote disagree; kept as published)</span>` : ""}<br><span class="muted small">${who}</span>${spoke}</li>`;
     }).join("");
     return `
       <section class="card">

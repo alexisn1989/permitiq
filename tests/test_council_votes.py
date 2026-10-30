@@ -307,3 +307,23 @@ def test_suffolk_exceptions_only_tally_alias_and_app_links(env, tmp_path, monkey
     assert d["council_check"] == "agrees" and d["council_votes"][0]["members_exceptions_only"] is True
     m = client.get("/api/council/members?locality=suffolk").json()
     assert m["exceptions_only"] and m["members"][0]["yes"] is None and m["members"][0]["absent"] == 1
+
+
+def test_exceptions_only_contradiction_is_flagged_not_fatal():
+    import io, csv
+    def text(cols, rows):
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=cols)
+        w.writeheader()
+        w.writerows(rows)
+        return buf.getvalue()
+    votes = text(CV.SF_VOTE_COLUMNS, [{"id": "1061", "meeting_id": "M", "meeting_date": "2026-05-06", "title": "x",
+                                       "agenda_item": "1", "motion": "Approved", "result": "passed", "vote_count": "8-0",
+                                       "votes_json": "{}", "category": "substantive", "scraped_at": "x"}])
+    members = text(CV.SF_MEMBER_VOTE_COLUMNS, [{"id": "m", "vote_id": "1061", "meeting_id": "M", "meeting_date": "2026-05-06",
+                                                "member_name": "Williams", "vote": "absent", "agenda_item": "1",
+                                                "title": "x", "result": "passed", "category": "substantive"}])
+    data = CV.build({"votes": votes, "member_votes": members, "agenda": text(CV.AGENDA_COLUMNS, [])}, {}, "suffolk")
+    v = data["votes"][0]
+    assert v["source_conflict"] == 1 and (v["yes"], v["no"], v["absent"]) == (8, 0, 1)  # kept as published
+    assert data["member_votes"] == [{"vote_id": "1061", "member": "Williams", "member_raw": "Williams", "vote": "absent"}]
