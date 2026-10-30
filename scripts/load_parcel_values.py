@@ -12,7 +12,8 @@ this script). One active load per locality; an identical re-read changes nothing
   tax year: FY2027, stored 'confirmed'.
 
 * Newport News -- the city's own parcel layer (maps.nnva.gov), its "Current" land and
-  improvement values (summed for the total). The layer states no year: 'unconfirmed'.
+  improvement values (summed for the total): FY2027, 'confirmed' from outside the layer
+  (HRGEO equals Previous; Ordinance 8160-26's FY2027 growth matches; see CITY_LAYERS).
 
 No tax bill is computed from any of them.
 
@@ -48,11 +49,14 @@ ROLL_FIELDS = ("parcel_id", "gpin", "extension", "current_land_value", "current_
                "current_total_value", "effective_year")
 ROLL_PAGE = 50000
 # a city's own parcel layer carrying its "current" land / improvement values (no total field and no
-# year): Newport News publishes Previous and Current values; HRGEO equals Previous on 199 of 200
-# sampled parcels, so Current is the newer roll. The layer also holds owner and mailing fields,
-# never requested.
+# year in the layer). Newport News publishes Previous and Current values. Its year is fixed from
+# outside the layer: HRGEO's February 2026 copy equals Previous on 199 of 200 sampled parcels
+# (Previous = FY2026), and Ordinance 8160-26 (passed 2026-05-12) states FY2027 total assessed value
+# exceeds last year's by 3.56% -- the layer's non-government Previous -> Current growth is 3.65%.
+# Current = FY2027, effective July 1, 2026. The layer also holds owner and mailing fields, never requested.
 CITY_LAYERS = {"newport_news": {"url": "https://maps.nnva.gov/gis/rest/services/Operational/Parcel/MapServer/0",
-                                "key": "PARCELID", "land": "CNTLNDVAL", "impr": "CNTIMPVAL"}}
+                                "key": "PARCELID", "land": "CNTLNDVAL", "impr": "CNTIMPVAL",
+                                "tax_year": 2027, "effective": "2026-07-01"}}
 LOCALITIES = sorted({*FIPS, *ROLLS, *CITY_LAYERS})
 FIELDS = ("FIPS", "LNDVALUE", "IMPVALUE", "TOTVALUE", "LASTUPDATE")
 
@@ -188,9 +192,12 @@ def read_city_layer(locality: str, stats: Counter) -> tuple[list[dict], dict]:
         p.update(LNDVALUE=land, IMPVALUE=impr, TOTVALUE=None if land is None and impr is None
                  else (land or 0) + (impr or 0))
         feats.append({"properties": p})
-    rows, vintage = normalize(feats, stats, c["key"])
-    return rows, {"source_url": c["url"], "expected": len(raw), "received": len(raw), "vintage": vintage,
-                  "tax_year": None, "status": "unconfirmed"}
+    rows, refreshed = normalize(feats, stats, c["key"])
+    stats["layer_refreshed_" + str(refreshed)] = 1
+    year = c.get("tax_year")
+    return rows, {"source_url": c["url"], "expected": len(raw), "received": len(raw),
+                  "vintage": c.get("effective") if year else refreshed, "tax_year": year,
+                  "status": "confirmed" if year else "unconfirmed"}
 
 
 def content_hash(rows: list[dict]) -> str:

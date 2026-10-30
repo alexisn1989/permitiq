@@ -209,4 +209,5 @@ def test_newport_news_current_values_from_the_city_layer(env, monkeypatch):
         rows = {r["gpin"]: dict(r) for r in conn.execute(
             "SELECT * FROM parcel_values_effective WHERE locality = 'newport_news'")}
     assert rows["294020532"]["total_value"] == 208000 and rows["294010337"]["total_value"] == 18500
-    assert all(r["tax_year"] is None and r["tax_year_status"] == "unconfirmed" for r in rows.values())
+    assert all(r["tax_year"] == 2027 and r["tax_year_status"] == "confirmed" for r in rows.values())
+    assert {r["source_vintage"] for r in rows.values()} == {"2026-07-01"}  # the effective date, not the refresh
