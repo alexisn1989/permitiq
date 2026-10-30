@@ -88,3 +88,9 @@ def test_newport_news_parcels_and_layers():
     assert "OWNER" not in out and "PSTL" not in out and "SALE" not in out and "newport_news" not in P.PARCEL_WHERE
     assert all(l.locality == "newport_news" for k, l in C.LAYERS.items() if k.startswith("nn_"))
     assert "State = 'VIRGINIA'" in C.LAYERS["nn_nrhp_points"].where  # "Newport" is Rhode Island
+
+
+def test_portsmouth_short_tax_map_numbers_load():
+    f = lambda g: {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"TAXMAPNO": g}}  # noqa: E731
+    got = [p.gpin for p in P.normalize([f("1-23"), f("12-345"), f("123-45"), f("12"), f(" ")], Counter(), "portsmouth")]
+    assert got == ["1-23", "12-345", "123-45"]  # 3+ digits load; a 2-digit or blank id does not

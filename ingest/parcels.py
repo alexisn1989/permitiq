@@ -90,8 +90,8 @@ PARCEL_OUT_FIELDS = {"suffolk": "OBJECTID,GPIN,ZONE_CLASS,NTI_ACREAGE",
                      "newport_news": "OBJECTID,PARCELID,SITEADDRESS,USEDSCRP,CLASSDSCRP,ZONE"}
 # A regional / statewide layer is filtered to the city (HRGEO's FIPS is the 3-digit county code)
 PARCEL_WHERE = {"portsmouth": "FIPS = '740'", "hampton": "FIPS = '650'"}
-# Digits a parcel id must have (Portsmouth's tax-map numbers have 6-7, Hampton's ids 7-8)
-PARCEL_MIN_DIGITS = {"portsmouth": 6, "hampton": 7, "newport_news": 9}
+# Digits a parcel id must have (Portsmouth tax-map numbers "1-23" .. "123-4567": 3-8; Hampton ids 7-8)
+PARCEL_MIN_DIGITS = {"portsmouth": 3, "hampton": 7, "newport_news": 9}
 PARCEL_SOURCES = {
     "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
