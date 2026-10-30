@@ -77,3 +77,12 @@ def test_min_digits_per_city_and_layers():
         assert all(l.locality == city for k, l in C.LAYERS.items() if k.startswith(prefix))
     assert "State = 'VIRGINIA'" in C.LAYERS["ht_nrhp_points"].where  # Hampton is also in South Carolina
     assert C.LAYERS["ht_vdot_adt"].where.count("'City of Hampton'") == 2  # not Northampton / Southampton
+
+
+def test_newport_news_parcels_and_layers():
+    f = {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"PARCELID": "123456789", "ZONING": "R4",
+         "PSTLADDRESS": "1 EXAMPLE AVE", "CALCAREA": 0.5}}
+    assert [(p.gpin, p.attrs["zoning"]) for p in P.normalize([f], Counter(), "newport_news")] == [("123456789", "R4")]
+    assert P.PARCEL_WHERE["newport_news"] == "FIPS = '700'" and "OWNER" not in P.PARCEL_OUT_FIELDS["newport_news"]
+    assert all(l.locality == "newport_news" for k, l in C.LAYERS.items() if k.startswith("nn_"))
+    assert "State = 'VIRGINIA'" in C.LAYERS["nn_nrhp_points"].where  # "Newport" is Rhode Island

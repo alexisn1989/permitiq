@@ -73,6 +73,10 @@ PARCEL_FIELD_MAPS = {
                    "tax_area_sqft": None, "prop_address": "PSTLADDRESS", "fema_zone_bldg": None, "acreage": "CALCAREA"},
     "hampton": {"gpin": "PARCELID", "zoning": None, "land_use": None, "prop_class": None,
                 "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None, "acreage": "CALCAREA"},
+    # Newport News (HRGEO, FIPS 700): 9-digit PARCELID, site address, zoning, acreage
+    "newport_news": {"gpin": "PARCELID", "zoning": "ZONING", "land_use": None, "prop_class": None,
+                     "tax_area_sqft": None, "prop_address": "PSTLADDRESS", "fema_zone_bldg": None,
+                     "acreage": "CALCAREA"},
     # Suffolk (city Zoning_Map/MapServer/43, profiled 2026-10-30): GPIN "0453-11-3917", ZONE_CLASS, NTI_ACREAGE
     # (acres). The layer also carries OWNER and MAILING_ADDRESS*: only PARCEL_OUT_FIELDS are ever requested.
     "suffolk": {"gpin": "GPIN", "zoning": "ZONE_CLASS", "land_use": None, "prop_class": None,
@@ -81,17 +85,19 @@ PARCEL_FIELD_MAPS = {
 # Fields requested from a layer that also holds personal data (default: all fields)
 PARCEL_OUT_FIELDS = {"suffolk": "OBJECTID,GPIN,ZONE_CLASS,NTI_ACREAGE",
                      "portsmouth": "OBJECTID,FIPS,TAXMAPNO,PSTLADDRESS,ZONING,CALCAREA,LASTUPDATE",
-                     "hampton": "OBJECTID,FIPS,PARCELID,CALCAREA,LASTUPDATE"}
+                     "hampton": "OBJECTID,FIPS,PARCELID,CALCAREA,LASTUPDATE",
+                     "newport_news": "OBJECTID,FIPS,PARCELID,PSTLADDRESS,ZONING,CALCAREA,LASTUPDATE"}
 # A regional / statewide layer is filtered to the city (HRGEO's FIPS is the 3-digit county code)
-PARCEL_WHERE = {"portsmouth": "FIPS = '740'", "hampton": "FIPS = '650'"}
+PARCEL_WHERE = {"portsmouth": "FIPS = '740'", "hampton": "FIPS = '650'", "newport_news": "FIPS = '700'"}
 # Digits a parcel id must have (Portsmouth's tax-map numbers have 6-7, Hampton's ids 7-8)
-PARCEL_MIN_DIGITS = {"portsmouth": 6, "hampton": 7}
+PARCEL_MIN_DIGITS = {"portsmouth": 6, "hampton": 7, "newport_news": 9}
 PARCEL_SOURCES = {
     "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
     "norfolk": "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData/Parcels/MapServer/1",
     "portsmouth": "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0",
     "hampton": "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0",
+    "newport_news": "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0",
     "suffolk": "https://suffolkgis.suffolk-va.net/hosting/rest/services/Zoning_Map/MapServer/43",
 }
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
