@@ -60,6 +60,13 @@ PT_VOTE_COLUMNS = ("id", "doc_id", "meeting_date", "title", "agenda_item", "moti
                    "result", "vote_count", "votes_json", "category", "scraped_at")
 PT_MEMBER_VOTE_COLUMNS = ("id", "vote_id", "doc_id", "meeting_date", "member_name", "vote", "agenda_item", "title",
                           "result", "category")
+# Suffolk (VoteIQ export 2026-10-30): no mover / seconder; each vote's member list holds only the exceptions to a
+# unanimous vote (absent / no / abstain), so its tally is the printed vote_count, never counted from members.
+SF_VOTE_COLUMNS = ("id", "meeting_id", "meeting_date", "title", "agenda_item", "motion", "result", "vote_count",
+                   "votes_json", "category", "scraped_at")
+SF_MEMBER_VOTE_COLUMNS = ("id", "vote_id", "meeting_id", "meeting_date", "member_name", "vote", "agenda_item", "title",
+                          "result", "category")
+SF_APP_RE = re.compile(r"\b[A-Z]{2,4}\d{2,4}-\d{2,5}\b")  # CUP2024-012, RZN2023-005
 PT_AGENDA_COLUMNS = ("id", "event_id", "meeting_date", "item_ref", "section", "title", "category", "agenda_url",
                      "how_to_participate", "scraped_at")
 LAYOUTS = {
@@ -82,7 +89,22 @@ LAYOUTS = {
                    "source": "VoteIQ export of Portsmouth City Council meetings",
                    "approve": {"adopt", "approve"}, "deny": {"deny"}, "continue": {"defer"},
                    "aliases": {}, "meeting_field": "doc_id"},
+    "suffolk": {"files": {"votes": ("suffolk_council_votes.csv", SF_VOTE_COLUMNS),
+                          "member_votes": ("suffolk_council_member_votes.csv", SF_MEMBER_VOTE_COLUMNS),
+                          "agenda": ("suffolk_upcoming_agenda.csv", AGENDA_COLUMNS)},
+                "source": "VoteIQ export of Suffolk City Council meetings (member lists hold exceptions only)",
+                "approve": {"approved", "approve", "approval", "approved as amended", "adopted", "adopt",
+                            "amend and adopt"},
+                "deny": {"deny", "denied"}, "continue": {"continue", "continued", "postponed"},
+                "aliases": {"Barlow": "Butler Barlow"}, "meeting_field": "meeting_id", "exceptions_only": True},
 }
+EXCEPTIONS_ONLY = {k for k, v in LAYOUTS.items() if v.get("exceptions_only")}
+
+
+def printed_tally(text: str | None) -> dict | None:
+    """'8-0', '8 -0', '7-0-1' -> yes / no / abstain as printed; None if it does not read that way."""
+    m = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?\s*", text or "")
+    return {"yes": int(m.group(1)), "no": int(m.group(2)), "abstain": int(m.group(3) or 0)} if m else None
 
 # modern case numbers are distinctive; the older short forms (UP-10-01, S-12-34) count
 # only when that exact number is in the city's case record
@@ -114,7 +136,7 @@ def motion_kind(motion: str | None, locality: str = "chesapeake") -> str:
 
 
 def meeting_date(raw: str | None) -> str | None:
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y"):  # "Apr 14, 2026", "MARCH 25, 2025", "02/24/2026" (Portsmouth)
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):  # Chesapeake, Norfolk, Portsmouth, Suffolk
         try:
             return datetime.strptime((raw or "").strip(), fmt).date().isoformat()
         except ValueError:
@@ -127,6 +149,8 @@ def case_ids(text: str, known, locality: str = "chesapeake", on_date: str | None
     is linked only when the title contains its own ordinance number (NF-CUP-50492 -> "50492") or one of
     its full addresses on the day the case took effect (several CUPs can share one address over the years);
     nothing is inferred. known: case_id -> (address, effective date) for Norfolk, else a set."""
+    if locality == "suffolk":  # an application number that is exactly a Suffolk case's
+        return sorted({f"SF-{m}" for m in SF_APP_RE.findall(text or "") if f"SF-{m}" in (known or {})})
     if locality == "norfolk":
         t = (text or "").upper()
         out = set()
@@ -152,7 +176,7 @@ def member(name: str, locality: str = "chesapeake") -> str:
 def city_action(locality: str, cc_action: str | None, stage: str | None) -> str | None:
     """The city record's Council outcome as a code case_check reads. Norfolk records no action code:
     every Norfolk case is an ordinance-approved item, so an approved stage reads as approved."""
-    if locality == "norfolk":
+    if locality in ("norfolk", "suffolk"):  # neither records an action code: their cases are approved items
         return "A" if stage == "approved" else None
     return cc_action
 
@@ -209,13 +233,17 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
     for vid, v in votes.items():
         r = v["row"]
         tally = {k: sum(x[0] == k for x in v["members"].values()) for k in ("yes", "no", "abstain", "absent")}
+        if locality in EXCEPTIONS_ONLY:  # members are exceptions only: the printed tally is the count
+            printed = printed_tally(r["vote_count"])
+            tally = {**(printed or {"yes": 0, "no": 0, "abstain": 0}), "absent": tally["absent"]}
         out_votes.append({
             "vote_id": vid, "clip_id": r[lay["meeting_field"]] or None, "meeting_date": meeting_date(r["meeting_date"]),
             "agenda_item": r["agenda_item"] or None, "title": r["title"] or None, "motion": r["motion"] or None,
-            "motion_kind": motion_kind(r["motion"], locality), "moved_by": r["moved_by"] or None,
-            "seconded_by": r["seconded_by"] or None, "result": r["result"], **tally,
+            "motion_kind": motion_kind(r["motion"], locality), "moved_by": r.get("moved_by") or None,
+            "seconded_by": r.get("seconded_by") or None, "result": r["result"], **tally,
             "printed_tally": r["vote_count"] or None,
-            "tally_mismatch": int(bool(r["vote_count"]) and r["vote_count"] != f"{tally['yes']}-{tally['no']}"),
+            "tally_mismatch": (int(printed_tally(r["vote_count"]) is None) if locality in EXCEPTIONS_ONLY else
+                               int(bool(r["vote_count"]) and r["vote_count"] != f"{tally['yes']}-{tally['no']}")),
             "category": r["category"] or None,
             "case_ids": case_ids(f"{r['title']} {r['agenda_item']}", known_cases, locality,
                                  meeting_date(r["meeting_date"]))})

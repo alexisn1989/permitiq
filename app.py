@@ -1081,6 +1081,8 @@ def _vote_out(conn, v: dict) -> dict:
                               "seconded_by", "result", "yes", "no", "abstain", "absent", "printed_tally",
                               "tally_mismatch", "category")} | {"case_ids": json.loads(v["case_ids_json"]),
                                                                 "members": members,
+                                                                "members_exceptions_only":
+                                                                    v["locality"] in council_votes_mod.EXCEPTIONS_ONLY,
                                                                 "testimony": dict(t) if t else None}
 
 
@@ -1130,21 +1132,29 @@ def council_members_route(locality: str = Query("chesapeake")):
             "SELECT m.member, m.vote, COUNT(*) AS n FROM council_member_votes m JOIN council_votes_effective v "
             "ON v.load_id = m.load_id AND v.vote_id = m.vote_id WHERE v.locality = ? AND v.case_ids_json != '[]' "
             "GROUP BY 1, 2", (locality,)).fetchall()
+        n_land_use = conn.execute("SELECT COUNT(*) FROM council_votes_effective WHERE locality = ? "
+                                  "AND case_ids_json != '[]'", (locality,)).fetchone()[0]
         seats = {r["name"]: r["seat"] for r in conn.execute(
             "SELECT c.name, c.seat FROM council_members c JOIN council_vote_loads l ON l.load_id = c.load_id "
             "AND l.is_active = 1 WHERE l.locality = ?", (locality,))}
         coverage = _council_coverage(conn, locality)
+    exceptions_only = locality in council_votes_mod.EXCEPTIONS_ONLY
     members: dict[str, dict] = {}
     for r in rows:
         m = members.setdefault(r["member"], {"member": r["member"], "yes": 0, "no": 0, "abstain": 0, "absent": 0})
         m[r["vote"]] = r["n"]
     for m in members.values():
-        total = m["yes"] + m["no"] + m["abstain"] + m["absent"]
+        if exceptions_only:  # the export lists only who was absent, voted no or abstained: yes is not known per member
+            m["yes"] = None
+            total = n_land_use
+        else:
+            total = m["yes"] + m["no"] + m["abstain"] + m["absent"]
         m["land_use_votes"] = total
         m["present_share"] = round((total - m["absent"]) / total, 4) if total else None
         # the roster is the current council; earlier members appear by the surname the videos record
         m["current_seat"] = next((seat for name, seat in seats.items() if m["member"].lower() in name.lower()), None)
     return {"members": sorted(members.values(), key=lambda m: m["member"]), "coverage": coverage,
+            "exceptions_only": exceptions_only,
             "notice": "Counts of each member's recorded votes on Council items that name a land-use case. "
                       + COUNCIL_VOTES_NOTICE}
 

@@ -263,3 +263,47 @@ def test_v20_to_v21_keeps_council_votes(env, tmp_path):
         assert [tuple(r) for r in conn.execute("SELECT * FROM council_votes ORDER BY vote_id")] == before
         assert "'deferred'" in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'council_votes'").fetchone()[0]
         assert conn.execute("SELECT COUNT(*) FROM council_votes_effective").fetchone()[0] == 1
+
+
+# ---------- Suffolk: members listed are exceptions only ----------
+
+def test_suffolk_exceptions_only_tally_alias_and_app_links(env, tmp_path, monkeypatch):
+    import csv
+    import test_suffolk as TS
+    feats = [{"type": "Feature", "id": 1, "geometry": TS.BOX(-76.6), "properties": {
+        "OBJECTID": 1, "APPLICATION": "CUP2024-012", "APPROVAL_DATE": 1700000000000, "AMEND_DATE": None,
+        "RESTRICTION_TYPE": "CUP", "Ordinance": None, "Document_Link": None}}]
+    def fetch(url, params=None, **kw):
+        if not url.endswith("/query"):
+            return {"objectIdField": "OBJECTID", "fields": [{"name": "OBJECTID"}] + [{"name": n} for n in TS.SR.FIELDS]}
+        if params.get("returnCountOnly"):
+            return {"count": 1}
+        if params.get("returnIdsOnly"):
+            return {"objectIds": [1]}
+        return {"type": "FeatureCollection", "features": feats}
+    monkeypatch.setattr(TS.ls, "fetch_json", fetch)
+    assert TS.ls.main([]) == 0                                    # SF-CUP2024-012, approved
+    def w(name, cols, rows):
+        with (tmp_path / name).open("w", newline="", encoding="utf-8") as fh:
+            wr = csv.DictWriter(fh, fieldnames=cols)
+            wr.writeheader()
+            wr.writerows(rows)
+    votes = [("1", "Approve CUP2024-012 Example", "Approved", "7-0", {"Barlow": "absent"}),
+             ("2", "Approve budget", "Approved", "8-0", {})]
+    w("suffolk_council_votes.csv", CV.SF_VOTE_COLUMNS, [
+        {"id": i, "meeting_id": "M1", "meeting_date": "2024-11-20", "title": t, "agenda_item": i, "motion": m,
+         "result": "passed", "vote_count": vc, "votes_json": json.dumps(j), "category": "substantive", "scraped_at": "x"}
+        for i, t, m, vc, j in votes])
+    w("suffolk_council_member_votes.csv", CV.SF_MEMBER_VOTE_COLUMNS, [
+        {"id": "m1", "vote_id": "1", "meeting_id": "M1", "meeting_date": "2024-11-20", "member_name": "Butler Barlow",
+         "vote": "absent", "agenda_item": "1", "title": "x", "result": "passed", "category": "substantive"}])
+    w("suffolk_upcoming_agenda.csv", CV.AGENDA_COLUMNS, [])
+    assert lcv.main(["--locality", "suffolk", "--dir", str(tmp_path), "--reports-dir", str(env["reports"])]) == 0
+    with db_module.db_readonly(env["db"]) as conn:
+        rows = {r["vote_id"]: dict(r) for r in conn.execute("SELECT * FROM council_votes_effective")}
+    assert (rows["1"]["yes"], rows["1"]["no"], rows["1"]["absent"], rows["1"]["tally_mismatch"]) == (7, 0, 1, 0)
+    assert rows["1"]["case_ids_json"] == '["SF-CUP2024-012"]' and rows["2"]["case_ids_json"] == "[]"
+    d = client.get("/api/land-use/cases/SF-CUP2024-012").json()
+    assert d["council_check"] == "agrees" and d["council_votes"][0]["members_exceptions_only"] is True
+    m = client.get("/api/council/members?locality=suffolk").json()
+    assert m["exceptions_only"] and m["members"][0]["yes"] is None and m["members"][0]["absent"] == 1

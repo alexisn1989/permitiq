@@ -299,7 +299,8 @@
     const sched = (c.council_scheduled || []).map((a) =>
       `<li>Scheduled for City Council ${esc(a.meeting_date)}${a.item_ref ? ` (item ${esc(a.item_ref)})` : ""}${a.agenda_url ? ` · ${escLinkify(a.agenda_url)}` : ""}</li>`).join("");
     const votes = (c.council_votes || []).map((v) => {
-      const who = (v.members || []).map((m) => `${esc(m.member)} ${esc(m.vote)}`).join(", ");
+      const listed = (v.members || []).map((m) => `${esc(m.member)} ${esc(m.vote)}`).join(", ");
+      const who = v.members_exceptions_only ? (listed ? `${listed}; every other member voted with the majority (the record lists exceptions only)` : "No exceptions recorded (the record lists only absent, no and abstain)") : listed;
       const tally = `${v.yes}–${v.no}${v.abstain ? `, ${v.abstain} abstain` : ""}${v.absent ? `, ${v.absent} absent` : ""}`;
       const t = v.testimony;
       const spoke = t ? `<br><span class="muted small">Public hearing speakers: ${esc(t.support)} support, ${esc(t.oppose)} oppose, ${esc(t.comment)} comment${t.present ? `, ${esc(t.present)} present` : ""} (names not shown)</span>` : "";
