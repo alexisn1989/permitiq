@@ -17,7 +17,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATUS_BUCKETS = ("active_pending", "issued", "finaled_closed", "expired_void", "other")
 GEOCODE_STATUSES = (
@@ -139,6 +139,71 @@ _SCHEMA_STATEMENTS = [
     """,
 ]
 
+# Schema v2: parcel + assessment reference data, copied read-only from the
+# FiscalMapIQ Neon database by scripts/load_neon_assessments.py. Columns
+# mirror the Neon source names; geom (PostGIS) is not copied. Values the
+# source leaves NULL stay NULL -- nothing here is derived or filled in.
+_SCHEMA_V2_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS parcels (
+        parcel_id                INTEGER PRIMARY KEY,
+        city_code                TEXT NOT NULL,
+        gpin                     TEXT,
+        recorded_gpin            TEXT,
+        prop_address             TEXT,
+        latitude                 REAL,
+        longitude                REAL,
+        acreage_computed         REAL,
+        acreage_stated           REAL,
+        tax_area_sqft            REAL,
+        zoning                   TEXT,
+        land_use_code            TEXT,
+        property_class           TEXT,
+        tax_district             TEXT,
+        tax_district_description TEXT,
+        exempt_source            TEXT,
+        fema_zone_bldg           TEXT,
+        watershed                TEXT,
+        census_tract             TEXT,
+        census_blkgrp            TEXT,
+        census_block             TEXT,
+        source_id                INTEGER,
+        data_year                INTEGER,
+        source_loaded_at         TEXT,
+        ingested_at              TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_parcels_gpin ON parcels(gpin)",
+    "CREATE INDEX IF NOT EXISTS idx_parcels_city ON parcels(city_code)",
+    """
+    CREATE TABLE IF NOT EXISTS assessments (
+        assessment_id               INTEGER PRIMARY KEY,
+        parcel_id                   INTEGER NOT NULL,
+        city_code                   TEXT NOT NULL,
+        tax_year                    INTEGER NOT NULL,
+        land_value                  REAL,
+        improvement_value           REAL,
+        other_value                 REAL,
+        total_value                 REAL,
+        taxable_land_value          REAL,
+        taxable_improvement_value   REAL,
+        taxable_other_value         REAL,
+        taxable_total_value         REAL,
+        assessment_effective_date   TEXT,
+        value_reconciliation_status TEXT,
+        source_lrsn                 TEXT,
+        source_history_slot         INTEGER,
+        methodology_version_id      INTEGER,
+        source_id                   INTEGER,
+        data_year                   INTEGER,
+        source_loaded_at            TEXT,
+        ingested_at                 TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_assessments_parcel ON assessments(parcel_id)",
+    "CREATE INDEX IF NOT EXISTS idx_assessments_city_year ON assessments(city_code, tax_year)",
+]
+
 
 def init_db(db_path: Path | str | None = None) -> None:
     """Create schema if absent and stamp the schema version.
@@ -147,19 +212,22 @@ def init_db(db_path: Path | str | None = None) -> None:
     needed) — a future migration step reads this before applying changes.
     """
     with db(db_path) as conn:
-        for statement in _SCHEMA_STATEMENTS:
-            conn.execute(statement)
-
         current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if current_version == 0:
-            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        elif current_version > SCHEMA_VERSION:
+        if current_version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"permits.db schema version {current_version} is newer than this "
                 f"code supports ({SCHEMA_VERSION}) — refusing to run against it."
             )
-        # current_version in (1..SCHEMA_VERSION-1) would run migrations here;
-        # none exist yet since this is the first schema version.
+
+        for statement in _SCHEMA_STATEMENTS:
+            conn.execute(statement)
+        # v1 -> v2 is purely additive (new tables only), so the same
+        # IF NOT EXISTS DDL serves both fresh databases and the migration.
+        for statement in _SCHEMA_V2_STATEMENTS:
+            conn.execute(statement)
+
+        if current_version < SCHEMA_VERSION:
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
 def schema_version(db_path: Path | str | None = None) -> int:

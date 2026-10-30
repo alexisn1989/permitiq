@@ -219,6 +219,18 @@ python scripts/geocode_backlog.py --locality all --analyze
 
 `--locality` accepts `norfolk`, `virginia_beach`, or `all`. Re-running is always safe. `--analyze` prints the unmapped-reason breakdown.
 
+### Parcels and assessments (from Neon)
+
+Virginia Beach parcels and FY2027 assessments are copied read-only from the FiscalMapIQ Neon database into the `parcels` and `assessments` tables (schema v2). The loader talks to Neon's HTTPS SQL endpoint, so it needs only `requests`, and it only ever sends `SELECT`s.
+
+```powershell
+$env:NEON_DATABASE_URL = "postgresql://..."   # Neon connection string, never committed
+python scripts/load_neon_assessments.py --dry-run --limit 100
+python scripts/load_neon_assessments.py
+```
+
+Re-running reports unchanged rows instead of rewriting them. Runs are logged in `ingestion_runs` under `neon_parcels_vb`, separate from permit syncs. The PostGIS `geom` column is not copied, and source NULLs stay NULL. A v2 database can't be opened by older code that only knows schema v1.
+
 ---
 
 ## API
@@ -234,6 +246,7 @@ Read-only. No mutation routes exist on `/api/permits*`.
 | `GET /api/stats` | Totals, mapped/unmapped, geocode + status breakdowns |
 | `GET /api/data-status` | Per-locality sync history from `ingestion_runs` |
 | `GET /api/export.geojson` | GeoJSON of mapped permits (capped; errors rather than truncating) |
+| `GET /api/parcels/{gpin}` | Parcel + assessments from the Neon copy (404 if not loaded) |
 
 Filters: `locality`, `permit_type`, `status`, `status_bucket`, `q`, `issued_from`, `issued_to`, `sort`, `order`, `limit`, `offset`.
 

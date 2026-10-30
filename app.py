@@ -230,6 +230,45 @@ def get_permit(permit_id: int):
     return row_to_permit_dict(row)
 
 
+PARCEL_FIELDS = (
+    "parcel_id", "city_code", "gpin", "recorded_gpin", "prop_address", "latitude",
+    "longitude", "acreage_computed", "acreage_stated", "tax_area_sqft", "zoning",
+    "land_use_code", "property_class", "tax_district", "tax_district_description",
+    "exempt_source", "fema_zone_bldg", "watershed", "census_tract", "census_blkgrp",
+    "census_block", "source_id", "data_year",
+)
+
+ASSESSMENT_FIELDS = (
+    "assessment_id", "tax_year", "land_value", "improvement_value", "other_value",
+    "total_value", "taxable_land_value", "taxable_improvement_value",
+    "taxable_other_value", "taxable_total_value", "assessment_effective_date",
+    "value_reconciliation_status", "source_id", "data_year",
+)
+
+
+@app.get("/api/parcels/{gpin}")
+def get_parcel(gpin: str):
+    """Parcel + its assessments, as copied from the FiscalMapIQ Neon source
+    by scripts/load_neon_assessments.py. 404 when the GPIN isn't loaded --
+    never a placeholder."""
+    with db_module.db() as conn:
+        parcel = conn.execute(
+            f"SELECT {', '.join(PARCEL_FIELDS)} FROM parcels WHERE gpin = ?", (gpin,)
+        ).fetchone()
+        if parcel is None:
+            raise HTTPException(404, f"parcel {gpin} not found")
+        assessments = conn.execute(
+            f"SELECT {', '.join(ASSESSMENT_FIELDS)} FROM assessments "
+            "WHERE parcel_id = ? ORDER BY tax_year DESC, assessment_id DESC",
+            (parcel["parcel_id"],),
+        ).fetchall()
+
+    return {
+        **{k: parcel[k] for k in PARCEL_FIELDS},
+        "assessments": [{k: a[k] for k in ASSESSMENT_FIELDS} for a in assessments],
+    }
+
+
 @app.get("/api/facets")
 def facets():
     localities_out = [

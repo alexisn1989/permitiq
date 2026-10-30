@@ -106,6 +106,37 @@ def test_init_db_idempotent(tmp_db_path):
     assert db_module.schema_version(tmp_db_path) == db_module.SCHEMA_VERSION
 
 
+def test_init_db_creates_v2_tables(tmp_db_path):
+    db_module.init_db(tmp_db_path)
+    with db_module.db(tmp_db_path) as conn:
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"parcels", "assessments"} <= tables
+
+
+def test_init_db_migrates_v1_to_v2_without_touching_permits(tmp_db_path):
+    """A v1 database (permits tables only) gains the v2 tables, keeps its
+    permit rows, and is re-stamped at the current version."""
+    ts = db_module.now_iso()
+    with db_module.db(tmp_db_path) as conn:
+        for statement in db_module._SCHEMA_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version=1")
+        conn.execute(
+            """INSERT INTO permits
+               (locality, source_permit_id, source_name, first_seen_at, ingested_at)
+               VALUES ('norfolk', 'ABC123', 'Norfolk Open Data', ?, ?)""",
+            (ts, ts),
+        )
+
+    db_module.init_db(tmp_db_path)
+
+    assert db_module.schema_version(tmp_db_path) == 2
+    with db_module.db(tmp_db_path) as conn:
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"parcels", "assessments"} <= tables
+        assert conn.execute("SELECT COUNT(*) FROM permits").fetchone()[0] == 1
+
+
 def test_init_db_rejects_newer_schema_version(tmp_db_path):
     db_module.init_db(tmp_db_path)
     with db_module.db(tmp_db_path) as conn:
