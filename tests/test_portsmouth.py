@@ -80,9 +80,11 @@ def test_min_digits_per_city_and_layers():
 
 
 def test_newport_news_parcels_and_layers():
-    f = {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"PARCELID": "123456789", "ZONING": "R4",
-         "PSTLADDRESS": "1 EXAMPLE AVE", "CALCAREA": 0.5}}
-    assert [(p.gpin, p.attrs["zoning"]) for p in P.normalize([f], Counter(), "newport_news")] == [("123456789", "R4")]
-    assert P.PARCEL_WHERE["newport_news"] == "FIPS = '700'" and "OWNER" not in P.PARCEL_OUT_FIELDS["newport_news"]
+    f = {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"PARCELID": "123456789", "ZONE": "R4",
+         "SITEADDRESS": "1 EXAMPLE AVE", "USEDSCRP": "Single Family", "CLASSDSCRP": "Residential"}}
+    assert [(p.gpin, p.attrs["zoning"], p.attrs["land_use"]) for p in P.normalize([f], Counter(), "newport_news")] == \
+        [("123456789", "R4", "Single Family")]
+    out = P.PARCEL_OUT_FIELDS["newport_news"]
+    assert "OWNER" not in out and "PSTL" not in out and "SALE" not in out and "newport_news" not in P.PARCEL_WHERE
     assert all(l.locality == "newport_news" for k, l in C.LAYERS.items() if k.startswith("nn_"))
     assert "State = 'VIRGINIA'" in C.LAYERS["nn_nrhp_points"].where  # "Newport" is Rhode Island

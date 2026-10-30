@@ -267,7 +267,7 @@ async function bootCase() {
     $("lead").innerHTML = buildCaseHtml(body);
     const tag = document.querySelector(".tagline");
     const CITY = { chesapeake: "Chesapeake", norfolk: "Norfolk", virginia_beach: "Virginia Beach",
-                   portsmouth: "Portsmouth", suffolk: "Suffolk" };
+                   portsmouth: "Portsmouth", suffolk: "Suffolk", hampton: "Hampton", newport_news: "Newport News" };
     if (tag) tag.textContent = `Lead detail · ${CITY[body.locality] || body.locality}`;
     const shape = body.geometry || (body.lat != null ? { type: "Point", coordinates: [body.lng, body.lat] } : null);
     if (window.L && shape) {

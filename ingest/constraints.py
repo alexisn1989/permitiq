@@ -420,9 +420,44 @@ HAMPTON_LAYERS = (
 )
 LAYERS.update({l.key: l for l in HAMPTON_LAYERS})
 
-# Newport News: federal and state layers (the city server is not yet reachable from this environment).
-# Names confirmed against each service: NRHP's County is "Newport News" (State VIRGINIA; "Newport" is RI).
+# Newport News (maps.nnva.gov Operational services, profiled 2026-10-30; measured only on Newport News parcels).
+# Its "Waterline" layer is named creeks, not water mains, so no water-main layer is used. Only city-owned gravity
+# sewer mains count (the layer also has private ones). NRHP's County is "Newport News" (State VIRGINIA).
+_NN = "https://maps.nnva.gov/gis/rest/services/Operational"
 NEWPORT_NEWS_LAYERS = (
+    Layer("nn_cbpa", f"{_NN}/CBPA/MapServer/0", "polygon_share", "Chesapeake Bay Preservation Area (city layer)",
+          "RPA (and its 100-ft buffer): clearing, grading and building need an exception. RMA / IDA: CBPA "
+          "performance criteria apply.", ("CBPADESC",), "CBPADESC", where="CBPADESC <> 'None'",
+          locality="newport_news"),
+    Layer("nn_zoning", f"{_NN}/Zoning/MapServer/0", "polygon_share", "Zoning (city layer)",
+          "Zoning district(s) of the parcel.", ("ZONECLASS", "ZONEDESC"), "ZONECLASS", classification=True,
+          locality="newport_news"),
+    Layer("nn_overlays", f"{_NN}/OverlayDistrict/MapServer/0", "polygon_share", "Overlay district",
+          "Overlay districts (airport horizontal zone, historic and corridor overlays): extra standards apply.",
+          ("ZONEDESC",), "ZONEDESC", locality="newport_news"),
+    Layer("nn_historic_districts", f"{_NN}/Historic_Register_District/MapServer/0", "polygon_share",
+          "Historic register district (city layer)", "A historic register district as mapped by the city.",
+          ("DHR_ID", "HistoricDistrictName"), "HistoricDistrictName", locality="newport_news"),
+    Layer("nn_reservoir_protection", f"{_NN}/ReservoirProtectionDistrict/MapServer/0", "polygon_share",
+          "Reservoir Protection District", "Drinking-water reservoir protection: development standards apply.",
+          ("Watershed",), "Watershed", locality="newport_news"),
+    Layer("nn_wetlands", f"{_NN}/Wetland/MapServer/0", "polygon_share", "Wetlands (city layer)",
+          "Mapped wetland, not a delineation.", ("WETLAND_TY",), "WETLAND_TY", locality="newport_news"),
+    Layer("nn_wave_action", f"{_NN}/LiMWA/MapServer/0", "line_crossing", "Limit of Moderate Wave Action",
+          "FEMA's limit of moderate wave action (1.5 ft waves): coastal construction standards seaward of it.",
+          near_ft=300, locality="newport_news"),
+    Layer("nn_slr_2050_100yr", f"{_NN}/SeaLevelRise2050/MapServer/3", "polygon_share",
+          "100-year storm flood extent with 1.5 ft sea-level rise (2050 scenario)",
+          "The city's 2050 planning scenario: the 100-year storm with 1.5 ft of sea-level rise. A scenario, not "
+          "a FEMA zone.", ("RiseScenario",), locality="newport_news"),
+    Layer("nn_pump_station_areas", f"{_NN}/WastewaterPumpStationArea/MapServer/0", "polygon_share",
+          "Wastewater pump station service area", "The pump station area and its HRSD basin, as published. Capacity "
+          "is not published.", ("PUMPSTATIONAREA", "BASIN"), "PUMPSTATIONAREA", classification=True,
+          locality="newport_news"),
+    Layer("nn_gravity_sewer", f"{_NN}/WastewaterGravityMain/MapServer/0", "line_crossing", "City gravity sewer main",
+          "Nearest city-owned gravity sewer main within 300 ft (size, material and year as published; capacity not "
+          "published).", ("DIAMETER", "MATERIAL", "YEARBUILT"), near_ft=300, where="OWNER = 'City of Newport News'",
+          fmt="{DIAMETER} in {MATERIAL}, built {YEARBUILT}", locality="newport_news"),
     Layer("nn_usda_soils", "VA715", "polygon_share", "Soils (USDA soil survey)",
           LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",
           locality="newport_news"),
@@ -726,9 +761,9 @@ def public_constraints(conn, gpins: list[str]) -> dict:
         boards = {}  # the board histories are Virginia Beach's
         boards_note = "Board histories are loaded for Virginia Beach only."
     not_covered = []
-    if cities & {"virginia_beach", "norfolk", "portsmouth", "hampton", "newport_news"}:  # lines not available
+    if cities & {"virginia_beach", "norfolk", "portsmouth", "hampton"}:  # lines not available
         not_covered.append("sewer / water capacity and pipe locations (not published)")
-    if cities & {"chesapeake", "suffolk"}:
+    if cities & {"chesapeake", "suffolk", "newport_news"}:
         not_covered.append("sewer / water capacity (not published; mains and service areas are shown as published)")
     not_covered.append("Virginia Landmarks Register (state DHR service unreachable)")
     return {

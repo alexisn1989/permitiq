@@ -955,7 +955,12 @@ SUFFOLK_CASE_NOTICE = ("Approved land-use items from Suffolk's Development Restr
                        "permits, conditional zonings, rezonings, Board of Zoning Appeals actions, variances and other "
                        "restrictions), with the type as the city prints it. Only approvals appear. The city's comments "
                        "are not shown.")
-CASE_NOTICES = {"chesapeake": CASE_NOTICE, "norfolk": NORFOLK_CASE_NOTICE, "suffolk": SUFFOLK_CASE_NOTICE}
+NEWPORT_NEWS_CASE_NOTICE = ("Approved land-use cases from Newport News' GIS (conditional use permits, conditional "
+                            "zonings, special exceptions, variances, zoning changes), with the type as the city prints "
+                            "it; most have no approval date in the layer. Site plans on the same parcels are shown with "
+                            "their published status.")
+CASE_NOTICES = {"chesapeake": CASE_NOTICE, "norfolk": NORFOLK_CASE_NOTICE, "suffolk": SUFFOLK_CASE_NOTICE,
+                "newport_news": NEWPORT_NEWS_CASE_NOTICE}
 RECORD_NOTICE = ("Development plans and right-of-way permits as the city publishes them. They are not building permits "
                  "and are not counted as permits. Names of private individuals are not shown.")
 
@@ -1165,7 +1170,8 @@ def development_records_route(
     limit: int = Query(500, ge=1, le=5000),
 ):
     """Development plans and right-of-way permits (never counted as building permits)."""
-    sources = parse_tokens(source, tuple(k for k in chesapeake_records.SOURCES if k != "ches_cases"), "source")
+    sources = parse_tokens(source, tuple(k for k in chesapeake_records.SOURCES if k != "ches_cases") + ("nn_site_plans",),
+                           "source")
     statuses = parse_tokens(status, None, "status")
     where, args = [], []
     if sources:
