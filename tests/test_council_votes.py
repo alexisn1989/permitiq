@@ -173,7 +173,7 @@ def _nf_write(tmp, votes, testimony):
 
 def test_norfolk_votes_testimony_counts_only_and_exact_links(env, tmp_path, monkeypatch):
     import test_norfolk_records as TN
-    monkeypatch.setattr(TN.ln, "fetch_json", TN._service({TN.NR.SOURCES["nf_cups"]: [TN._cup(1, 50492.0, "1229 EXAMPLE AVENUE")],
+    monkeypatch.setattr(TN.ln, "fetch_json", TN._service({TN.NR.SOURCES["nf_cups"]: [TN._cup(1, 50492.0, "1229 EXAMPLE AVENUE", effective="2025-03-25")],
                                                           TN.NR.SOURCES["nf_conditional_zoning"]: []}))
     assert TN.ln.main(["--all"]) == 0                        # NF-CUP-50492 at 1229 EXAMPLE AVENUE, approved
     who = {"Alpha": "yes", "Smigiel": "yes", "Thomas Jr.": "no"}
@@ -198,3 +198,13 @@ def test_norfolk_votes_testimony_counts_only_and_exact_links(env, tmp_path, monk
     assert "Jane Q Public" not in dump and "Private Ln" not in dump and "next door" not in dump
     d = client.get("/api/land-use/cases/NF-CUP-50492").json()
     assert d["council_check"] == "agrees" and d["council_votes"][0]["testimony"]["support"] == 2
+
+
+def test_object_id_keys_are_not_ordinance_numbers():
+    known = {"NF-CZ-OID-10": (None, None), "NF-CUP-49563": ("9633 19TH BAY STREET", "2024-04-23")}
+    assert CV.case_ids("Ordinance amending City Code section 10", known, "norfolk") == []
+    assert CV.case_ids("Ordinance No. 49563 granting ...", known, "norfolk") == ["NF-CUP-49563"]
+
+    # an address links only on the day the case took effect: another CUP at the same address is another case
+    assert CV.case_ids("CUP at 9633 19th Bay Street", known, "norfolk", "2024-04-23") == ["NF-CUP-49563"]
+    assert CV.case_ids("CUP at 9633 19th Bay Street", known, "norfolk", "2025-01-14") == []

@@ -107,18 +107,21 @@ def meeting_date(raw: str | None) -> str | None:
     return None  # "unknown" in the export: kept, excluded from date logic
 
 
-def case_ids(text: str, known, locality: str = "chesapeake") -> list[str]:
+def case_ids(text: str, known, locality: str = "chesapeake", on_date: str | None = None) -> list[str]:
     """Case numbers a vote or agenda title names. Norfolk titles carry no case number: a Norfolk case
     is linked only when the title contains its own ordinance number (NF-CUP-50492 -> "50492") or one of
-    its full addresses, exactly; nothing is inferred. known: case_id -> address (Norfolk) or a set."""
+    its full addresses on the day the case took effect (several CUPs can share one address over the years);
+    nothing is inferred. known: case_id -> (address, effective date) for Norfolk, else a set."""
     if locality == "norfolk":
         t = (text or "").upper()
         out = set()
-        for cid, address in (known or {}).items():
-            ordn = cid.rsplit("-", 1)[-1]
-            if ordn.isdigit() and re.search(rf"\b{ordn}\b", t):
+        for cid, (address, effective) in (known or {}).items():
+            # only a real ordinance number (NF-CUP-49563); an object-id key (NF-CZ-OID-10) is not one
+            m = re.fullmatch(r"NF-(?:CUP|CZ)-(\d{5,})", cid)
+            if m and re.search(rf"\b{m.group(1)}\b", t):
                 out.add(cid)
-            elif any(a and len(a) > 8 and a in t for a in (x.strip().upper() for x in (address or "").split(";"))):
+            elif on_date and effective == on_date and any(
+                    a and len(a) > 8 and a in t for a in (x.strip().upper() for x in (address or "").split(";"))):
                 out.add(cid)
         return sorted(out)
     found = set(CASE_ID_RE.findall(text or ""))
@@ -199,7 +202,8 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
             "printed_tally": r["vote_count"] or None,
             "tally_mismatch": int(bool(r["vote_count"]) and r["vote_count"] != f"{tally['yes']}-{tally['no']}"),
             "category": r["category"] or None,
-            "case_ids": case_ids(f"{r['title']} {r['agenda_item']}", known_cases, locality)})
+            "case_ids": case_ids(f"{r['title']} {r['agenda_item']}", known_cases, locality,
+                                 meeting_date(r["meeting_date"]))})
         out_members += [{"vote_id": vid, "member": k, "member_raw": raw_name, "vote": x}
                         for k, (x, raw_name) in sorted(v["members"].items())]
     members = [{"name": m["name"].strip(), "seat": m["district"] or None} for m in raw["members"]]  # no email
@@ -207,7 +211,7 @@ def build(texts: dict[str, str], known_cases, locality: str = "chesapeake") -> d
                "meeting_date": meeting_date(a["meeting_date"]) or a["meeting_date"] or None,
                "item_ref": a["item_ref"] or None, "section": a.get("section") or a.get("status") or None,
                "title": a["title"] or None, "category": a.get("category") or None, "agenda_url": a["agenda_url"] or None,
-               "case_ids": case_ids(a["title"], known_cases, locality),
+               "case_ids": case_ids(a["title"], known_cases, locality, meeting_date(a["meeting_date"])),
                "lat": float(a["lat"]) if a.get("lat") else None, "lng": float(a["lng"]) if a.get("lng") else None,
                "scraped_at": a["scraped_at"] or None} for a in raw.get("agenda", [])]
     testimony = testimony_counts(raw["testimony"]) if "testimony" in raw else []

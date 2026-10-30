@@ -64,8 +64,8 @@ def main(argv=None) -> int:
         files = CV.LAYOUTS[args.locality]["files"]
         texts = {k: (args.dir / fname).read_text(encoding="utf-8-sig") for k, (fname, _) in files.items()}
         with db_module.db_readonly() as conn:
-            known = {r[0]: r[1] for r in conn.execute(
-                "SELECT case_id, address FROM land_use_cases_effective WHERE locality = ?", (args.locality,))}
+            known = {r[0]: (r[1], r[2]) for r in conn.execute(
+                "SELECT case_id, address, final_date FROM land_use_cases_effective WHERE locality = ?", (args.locality,))}
         data = CV.build(texts, known, args.locality)
     except (CV.ExportError, OSError, ValueError) as e:
         print(f"[FATAL] {e}; nothing written", file=sys.stderr)
