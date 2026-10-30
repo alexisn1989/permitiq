@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("DATA_DIR", str(BASE_DIR))) / "permits.db"
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # Flood classes stored in permit_flood.flood_class, and the two derived only
 # at read time by the permit_flood_effective view (see ingest/flood.py).
@@ -2046,6 +2046,27 @@ def init_db(db_path: Path | str | None = None) -> None:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(council_votes)")}
             if "source_conflict" not in cols:
                 conn.execute("ALTER TABLE council_votes ADD COLUMN source_conflict INTEGER NOT NULL DEFAULT 0")
+        if current_version < 26:
+            # assessed values per parcel from a regional republication (HRGEO): no owner columns; the
+            # tax year stays NULL / 'unconfirmed' until the city confirms it -- never a tax bill
+            conn.execute("""CREATE TABLE IF NOT EXISTS parcel_value_loads (
+                load_id INTEGER PRIMARY KEY, locality TEXT NOT NULL, source_url TEXT NOT NULL,
+                expected_count INTEGER NOT NULL, received_count INTEGER NOT NULL, parcels INTEGER NOT NULL,
+                matched_parcels INTEGER, parcel_load_id INTEGER, content_hash TEXT NOT NULL, source_vintage TEXT,
+                stats_json TEXT NOT NULL DEFAULT '{}', loaded_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 0)""")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_parcel_value_loads_active ON parcel_value_loads(locality) "
+                         "WHERE is_active = 1")
+            conn.execute("""CREATE TABLE IF NOT EXISTS parcel_values (
+                load_id INTEGER NOT NULL REFERENCES parcel_value_loads(load_id) ON DELETE CASCADE,
+                locality TEXT NOT NULL, gpin TEXT NOT NULL, land_value REAL, improvement_value REAL, total_value REAL,
+                tax_year INTEGER, tax_year_status TEXT NOT NULL DEFAULT 'unconfirmed'
+                    CHECK (tax_year_status IN ('unconfirmed', 'confirmed')),
+                CHECK ((tax_year_status = 'confirmed') = (tax_year IS NOT NULL)),
+                PRIMARY KEY (load_id, gpin))""")
+            conn.execute("""CREATE VIEW IF NOT EXISTS parcel_values_effective AS
+                SELECT v.locality, v.gpin, v.land_value, v.improvement_value, v.total_value, v.tax_year,
+                       v.tax_year_status, l.source_vintage, l.source_url, l.load_id
+                FROM parcel_values v JOIN parcel_value_loads l ON l.load_id = v.load_id AND l.is_active = 1""")
         if current_version < 20:
             # public-hearing testimony as counts only (speakers' names / addresses are never stored)
             conn.execute("""CREATE TABLE IF NOT EXISTS council_testimony_counts (

@@ -617,6 +617,14 @@ python scripts/tag_parcel_constraints.py --locality norfolk
   - 4 flood classes agree with FEMA;
   - Virginia Beach and Chesapeake results hash-identical.
 
+### Chesapeake assessed values (HRGEO, tax year unconfirmed)
+
+- **Source:** HRSD's HRGEO regional parcel layer (`geo.hrsd.com`), `FIPS = '550'`: the city's own parcel layer carries no values. HRGEO's `PARCELID` is Chesapeake's 13-digit `MAP_PARCEL`.
+- **Load:** `python scripts/migrate_db.py` (schema v26), then `python scripts/load_parcel_values.py --locality chesapeake`. Complete or nothing; one active load per city; an identical re-read changes nothing.
+- **Only value fields are requested** (`PARCELID`, `LNDVALUE`, `IMPVALUE`, `TOTVALUE`, `LASTUPDATE`, `FIPS`); the layer's owner names and mailing addresses never reach PermitIQ.
+- **Read 2026-10-30:** 92,498 features → 92,403 parcels (95 exact duplicate rows collapsed), 92,316 with a value, $47.52B; refreshed 2026-02-27. 92,335 of the 92,708 Chesapeake parcels match by id.
+- **Shown on Chesapeake case cards** as "Assessed value (tax year unconfirmed)", with land and improvements. The source states no tax year, so `tax_year` stays NULL (`tax_year_status = 'unconfirmed'`) and **no tax bill is computed or shown**. Values attach only to the same city's parcels.
+
 ### Chesapeake City Council votes (VoteIQ export)
 
 ```bash

@@ -978,13 +978,18 @@ def _record_load(conn, source: str) -> Optional[dict]:
 
 
 def _exact_parcels(conn, gpins: list[str]) -> list[dict]:
-    """Parcels of the active loads by their exact parcel id (already linked; no GPIN10 fallback)."""
+    """Parcels of the active loads by their exact parcel id (already linked; no GPIN10 fallback), with the
+    assessed value of the same city's active value load when there is one (tax year unconfirmed)."""
     return [dict(r) for r in conn.execute(
         "SELECT p.gpin, l.locality, p.zoning, p.prop_class, p.prop_address, ROUND(p.tax_area_sqft / 43560.0, 4) AS acreage, "
         "(p.minx + p.maxx) / 2 AS lng, (p.miny + p.maxy) / 2 AS lat, pf.parcel_flood_class, pf.share_sfha_v, "
-        "pf.share_sfha_a, pf.share_shaded_x FROM json_each(?) g JOIN parcels p ON p.gpin = g.value "
+        "pf.share_sfha_a, pf.share_shaded_x, pv.total_value, pv.land_value, pv.improvement_value, "
+        "pv.tax_year, pv.tax_year_status, pv.source_vintage AS value_vintage "
+        "FROM json_each(?) g JOIN parcels p ON p.gpin = g.value "
         "JOIN parcel_loads l ON l.load_id = p.load_id AND l.is_active = 1 "
-        "LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin ORDER BY p.gpin LIMIT 25", (json.dumps(gpins),))]
+        "LEFT JOIN parcel_flood_effective pf ON pf.gpin = p.gpin "
+        "LEFT JOIN parcel_values_effective pv ON pv.gpin = p.gpin AND pv.locality = l.locality "
+        "ORDER BY p.gpin LIMIT 25", (json.dumps(gpins),))]
 
 
 @app.get("/api/land-use/cases")
