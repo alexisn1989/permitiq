@@ -65,11 +65,20 @@ PARCEL_FIELD_MAPS = {
     # the layer's own SHAPE.STArea() in square feet (EPSG 2284, US feet) -- GIS-measured, not a tax-roll area
     "norfolk": {"gpin": "GPIN", "zoning": None, "land_use": None, "prop_class": None,
                 "tax_area_sqft": "SHAPE.STArea()", "prop_address": None, "fema_zone_bldg": None},
+    # Portsmouth (VGIN statewide parcels, VIMS copy, dataVersion 2022 Q3, profiled 2026-10-30): PTM_ID is the
+    # tax-map parcel number ("0891-0090", 8 digits); the layer is Web Mercator, so its area is not used
+    "portsmouth": {"gpin": "PTM_ID", "zoning": None, "land_use": None, "prop_class": None,
+                   "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None},
 }
+# A statewide layer is filtered to the city; a city layer reads everything
+PARCEL_WHERE = {"portsmouth": "FIPS = '51740'"}
+# Digits a parcel id must have (Portsmouth's tax-map numbers are 8)
+PARCEL_MIN_DIGITS = {"portsmouth": 8}
 PARCEL_SOURCES = {
     "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
     "norfolk": "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData/Parcels/MapServer/1",
+    "portsmouth": "https://cmap22.vims.edu/arcgis/rest/services/VirginiaAndBaywide/VirginiaParcelsAndTables/MapServer/0",
 }
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios
 HAZARD_CLASSES = ("sfha_v", "sfha_a", "shaded_x")
@@ -128,7 +137,7 @@ def normalize(features: list[dict], stats, locality: str = "virginia_beach") -> 
         props = f.get("properties") or {}
         fmap = PARCEL_FIELD_MAPS[locality]
         gpin = _prop(props, fmap["gpin"])
-        if not gpin or len(digits(gpin)) < 10:
+        if not gpin or len(digits(gpin)) < PARCEL_MIN_DIGITS.get(locality, 10):
             stats["skipped_no_gpin"] += 1
             continue
         geom = polygonal(shape(f["geometry"])) if f.get("geometry") else None

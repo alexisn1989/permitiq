@@ -73,8 +73,8 @@ def isolated_db(tmp_path, monkeypatch):
 @pytest.fixture
 def vb_db(isolated_db):
     permits = [vb_permit(k, lat, lng) for k, (lat, lng, _) in POINTS.items()]
-    # a permit in a city with no flood map assigned (Norfolk has one since v17): out of scope
-    permits.append(NormalizedPermit(locality="portsmouth", source_permit_id="N1", source_name="Portsmouth",
+    # a permit in a city with no flood map assigned (Norfolk and Portsmouth have one): out of scope
+    permits.append(NormalizedPermit(locality="hampton", source_permit_id="N1", source_name="Hampton",
                                     lat=36.85, lng=-76.28, coordinate_source="census", geocode_status="matched"))
     with db_module.db(isolated_db) as conn:
         upsert_permits(conn, permits)

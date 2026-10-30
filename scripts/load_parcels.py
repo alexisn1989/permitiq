@@ -72,14 +72,15 @@ def layer_meta(url: str, locality: str = "virginia_beach") -> dict:
     return meta
 
 
-def _count(url: str) -> int:
-    return int(fetch_json(f"{url}/query", {"where": "1=1", "returnCountOnly": "true", "f": "json"})["count"])
+def _count(url: str, where: str = "1=1") -> int:
+    return int(fetch_json(f"{url}/query", {"where": where, "returnCountOnly": "true", "f": "json"})["count"])
 
 
-def fetch_complete(url: str, meta: dict, page_size: int) -> tuple[list[dict], dict]:
+def fetch_complete(url: str, meta: dict, page_size: int, where: str = "1=1") -> tuple[list[dict], dict]:
+    """where: the city's slice of a statewide layer (e.g. FIPS = '51740'); 1=1 for a city layer."""
     oid_field = meta.get("objectIdField") or "OBJECTID"
-    expected = _count(url)
-    ids_resp = fetch_json(f"{url}/query", {"where": "1=1", "returnIdsOnly": "true", "f": "json"})
+    expected = _count(url, where)
+    ids_resp = fetch_json(f"{url}/query", {"where": where, "returnIdsOnly": "true", "f": "json"})
     id_list = ids_resp.get("objectIds") or []
     id_set = set(id_list)
     if len(id_set) != len(id_list):
@@ -98,7 +99,7 @@ def fetch_complete(url: str, meta: dict, page_size: int) -> tuple[list[dict], di
         for f in data.get("features") or []:
             features.append(f)
             received.append(_source_id(f, oid_field))
-    recount = _count(url)
+    recount = _count(url, where)
     check = verify(received, expected, id_set)
     if recount != expected:
         check["problems"].append(f"layer count changed during fetch ({expected} -> {recount})")
@@ -161,8 +162,8 @@ def main(argv=None) -> int:
             print(f"  fields: {[f.get('name') for f in meta.get('fields', [])]}")
             print(f"  required fields missing: "
                   f"{P.missing_fields({f.get('name', '') for f in meta.get('fields', [])}, args.locality)}")
-            print(f"  returnCountOnly: {_count(args.url)}  (use as --expected-count for --file)")
-            sample = fetch_json(f"{args.url}/query", {"where": "1=1", "outFields": "*", "returnGeometry": "false",
+            print(f"  returnCountOnly: {_count(args.url, P.PARCEL_WHERE.get(args.locality, "1=1"))}  (use as --expected-count for --file)")
+            sample = fetch_json(f"{args.url}/query", {"where": P.PARCEL_WHERE.get(args.locality, "1=1"), "outFields": "*", "returnGeometry": "false",
                                                       "resultRecordCount": 5, "f": "json"})
             for f in sample.get("features") or []:
                 print(f"  sample: {f.get('attributes')}")
@@ -190,7 +191,9 @@ def main(argv=None) -> int:
         else:
             meta = layer_meta(args.url, args.locality)
             vintage = (meta.get("editingInfo") or {}).get("lastEditDate")
-            raw, check = fetch_complete(args.url, meta, args.page_size)
+            raw, check = fetch_complete(args.url, meta, args.page_size, P.PARCEL_WHERE.get(args.locality, "1=1"))
+            versions = {(f.get("properties") or {}).get("dataVersion") for f in raw} - {None}
+            vintage = ", ".join(sorted(versions)) if versions else vintage  # a statewide copy's own data version
             source = args.url
         if not raw:
             raise LoadError("no features; nothing written")
