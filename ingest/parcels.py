@@ -65,26 +65,33 @@ PARCEL_FIELD_MAPS = {
     # the layer's own SHAPE.STArea() in square feet (EPSG 2284, US feet) -- GIS-measured, not a tax-roll area
     "norfolk": {"gpin": "GPIN", "zoning": None, "land_use": None, "prop_class": None,
                 "tax_area_sqft": "SHAPE.STArea()", "prop_address": None, "fema_zone_bldg": None},
-    # Portsmouth (VGIN statewide parcels, VIMS copy, dataVersion 2022 Q3, profiled 2026-10-30): PTM_ID is the
-    # tax-map parcel number ("0891-0090", 8 digits); the layer is Web Mercator, so its area is not used
-    "portsmouth": {"gpin": "PTM_ID", "zoning": None, "land_use": None, "prop_class": None,
-                   "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None},
+    # Portsmouth and Hampton (HRGEO regional parcels, geo.hrsd.com, updated each January and July; Feb 2026 at
+    # profiling, 2026-10-30). The layer also holds owner names and mailing addresses: only PARCEL_OUT_FIELDS are
+    # requested. Portsmouth's id is its tax-map number ("123-456", with a dash) -- its 8-digit PARCELID could equal
+    # a Hampton PARCELID, and parcel ids must stay distinct across cities. CALCAREA is acres.
+    "portsmouth": {"gpin": "TAXMAPNO", "zoning": "ZONING", "land_use": None, "prop_class": None,
+                   "tax_area_sqft": None, "prop_address": "PSTLADDRESS", "fema_zone_bldg": None, "acreage": "CALCAREA"},
+    "hampton": {"gpin": "PARCELID", "zoning": None, "land_use": None, "prop_class": None,
+                "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None, "acreage": "CALCAREA"},
     # Suffolk (city Zoning_Map/MapServer/43, profiled 2026-10-30): GPIN "0453-11-3917", ZONE_CLASS, NTI_ACREAGE
     # (acres). The layer also carries OWNER and MAILING_ADDRESS*: only PARCEL_OUT_FIELDS are ever requested.
     "suffolk": {"gpin": "GPIN", "zoning": "ZONE_CLASS", "land_use": None, "prop_class": None,
                 "tax_area_sqft": None, "prop_address": None, "fema_zone_bldg": None, "acreage": "NTI_ACREAGE"},
 }
 # Fields requested from a layer that also holds personal data (default: all fields)
-PARCEL_OUT_FIELDS = {"suffolk": "OBJECTID,GPIN,ZONE_CLASS,NTI_ACREAGE"}
-# A statewide layer is filtered to the city; a city layer reads everything
-PARCEL_WHERE = {"portsmouth": "FIPS = '51740'"}
-# Digits a parcel id must have (Portsmouth's tax-map numbers are 8)
-PARCEL_MIN_DIGITS = {"portsmouth": 8}
+PARCEL_OUT_FIELDS = {"suffolk": "OBJECTID,GPIN,ZONE_CLASS,NTI_ACREAGE",
+                     "portsmouth": "OBJECTID,FIPS,TAXMAPNO,PSTLADDRESS,ZONING,CALCAREA,LASTUPDATE",
+                     "hampton": "OBJECTID,FIPS,PARCELID,CALCAREA,LASTUPDATE"}
+# A regional / statewide layer is filtered to the city (HRGEO's FIPS is the 3-digit county code)
+PARCEL_WHERE = {"portsmouth": "FIPS = '740'", "hampton": "FIPS = '650'"}
+# Digits a parcel id must have (Portsmouth's tax-map numbers have 6-7, Hampton's ids 7-8)
+PARCEL_MIN_DIGITS = {"portsmouth": 6, "hampton": 7}
 PARCEL_SOURCES = {
     "virginia_beach": "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Property_Information/MapServer/12",
     "chesapeake": "https://gis.cityofchesapeake.net/mapping/rest/services/OpenData/OpenData/MapServer/15",
     "norfolk": "https://gisshare.norfolk.gov/pubserver/rest/services/OpenData/Parcels/MapServer/1",
-    "portsmouth": "https://cmap22.vims.edu/arcgis/rest/services/VirginiaAndBaywide/VirginiaParcelsAndTables/MapServer/0",
+    "portsmouth": "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0",
+    "hampton": "https://geo.hrsd.com/hrgeo/rest/services/regionalgis/HRGeo_Parcels_Public/MapServer/0",
     "suffolk": "https://suffolkgis.suffolk-va.net/hosting/rest/services/Zoning_Map/MapServer/43",
 }
 LAT0 = math.radians(36.8)  # Virginia Beach; local equal-area scaling for share ratios

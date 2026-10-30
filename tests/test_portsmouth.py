@@ -1,8 +1,8 @@
-"""Portsmouth from VGIN statewide parcels: only FIPS 51740 is read, 8-digit tax-map ids
-load, other cities keep the 10-digit minimum, and no owner field is stored. Synthetic data."""
+"""Portsmouth and Hampton from the HRGEO regional parcel layer: only their county code is
+read, only the listed fields are requested (the layer holds owner names and mailing
+addresses), short ids load, other cities keep the 10-digit minimum. Synthetic data."""
 
 import importlib.util
-import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -17,49 +17,63 @@ lp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lp)
 
 
-def _feat(oid, fips, ptm, x):
+def _feat(oid, fips, taxmap, parcelid, x):
     return {"type": "Feature", "id": oid,
             "geometry": {"type": "Polygon", "coordinates": [[[x, 36.85], [x + .001, 36.85], [x + .001, 36.851], [x, 36.851], [x, 36.85]]]},
-            "properties": {"OBJECTID": oid, "FIPS": fips, "LOCALITY": "x", "PARCELID": str(oid), "PTM_ID": ptm,
-                           "dataVersion": "2022 Q3", "Owner1": "Jane Q Public"}}
+            "properties": {"OBJECTID": oid, "FIPS": fips, "TAXMAPNO": taxmap, "PARCELID": parcelid,
+                           "PSTLADDRESS": "100 EXAMPLE ST", "ZONING": "R-75", "CALCAREA": 0.25,
+                           "LASTUPDATE": 1772150400000, "OWNERNME1": "Jane Q Public", "MLADDRESS": "1 Private Ln"}}
 
 
-FEATS = [_feat(1, "51740", "0891-0090", -76.35), _feat(2, "51740", "0891-0100", -76.34), _feat(3, "51740", "-", -76.33),
-         _feat(4, "51810", "1234-5678", -76.0)]  # another city in the statewide layer
+FEATS = [_feat(1, "740", "123-456", "12004866", -76.35), _feat(2, "740", "123-457", "12004867", -76.34),
+         _feat(3, "740", None, "12004868", -76.33), _feat(4, "650", None, "12004866", -76.40)]  # same PARCELID, Hampton
 
 
-def _service(seen):
+def _service(seen_where, seen_fields):
     def fetch(url, params=None, **kw):
         if not url.endswith("/query"):
             return {"geometryType": "esriGeometryPolygon", "objectIdField": "OBJECTID", "maxRecordCount": 2000,
-                    "fields": [{"name": n} for n in ("OBJECTID", "FIPS", "PTM_ID", "dataVersion")]}
-        seen.append(params.get("where"))
-        sel = [f for f in FEATS if params.get("where") == "1=1" or f["properties"]["FIPS"] == "51740"]
+                    "fields": [{"name": n} for n in ("OBJECTID", "FIPS", "TAXMAPNO", "PARCELID", "PSTLADDRESS", "ZONING",
+                                                     "CALCAREA", "LASTUPDATE", "OWNERNME1", "MLADDRESS")]}
+        seen_where.append(params.get("where"))
+        fips = params.get("where", "").split("'")[1] if "'" in params.get("where", "") else None
+        sel = [f for f in FEATS if fips is None or f["properties"]["FIPS"] == fips]
         if params.get("returnCountOnly"):
             return {"count": len(sel)}
         if params.get("returnIdsOnly"):
             return {"objectIds": [f["id"] for f in sel]}
+        seen_fields.append(params["outFields"])
+        keep = params["outFields"].split(",")
         ids = [int(x) for x in params["objectIds"].split(",")]
-        return {"type": "FeatureCollection", "features": [f for f in FEATS if f["id"] in ids]}
+        return {"type": "FeatureCollection", "features": [
+            {**f, "properties": {k: v for k, v in f["properties"].items() if k in keep}} for f in FEATS if f["id"] in ids]}
     return fetch
 
 
-def test_statewide_layer_reads_only_portsmouth_and_short_ids_load(env, monkeypatch):
-    seen = []
-    monkeypatch.setattr(lp, "fetch_json", _service(seen))
+def test_regional_layer_reads_one_city_with_listed_fields_only(env, monkeypatch):
+    where, fields = [], []
+    monkeypatch.setattr(lp, "fetch_json", _service(where, fields))
     assert lp.main(["--locality", "portsmouth"]) == 0
-    assert seen and all(w == "FIPS = '51740'" for w in seen if w)
+    assert lp.main(["--locality", "hampton"]) == 0
+    assert set(w for w in where if w) == {"FIPS = '740'", "FIPS = '650'"}
+    assert fields and all("OWNER" not in f and "MLADDRESS" not in f and f != "*" for f in fields)
     with db_module.db_readonly(env["db"]) as conn:
-        load = dict(conn.execute("SELECT * FROM parcel_loads WHERE locality = 'portsmouth'").fetchone())
-        rows = [dict(r) for r in conn.execute("SELECT * FROM parcels WHERE load_id = ?", (load["load_id"],))]
-    assert sorted(r["gpin"] for r in rows) == ["0891-0090", "0891-0100"]  # "-" skipped, other FIPS never read
-    assert load["source_vintage"] == "2022 Q3" and load["expected_count"] == 3
-    assert "Jane Q Public" not in json.dumps(rows, default=str)
+        rows = {(r["locality"], r["gpin"]): dict(r) for r in conn.execute(
+            "SELECT l.locality, l.source_vintage, p.* FROM parcels p JOIN parcel_loads l ON l.load_id = p.load_id")}
+    assert set(rows) == {("portsmouth", "123-456"), ("portsmouth", "123-457"), ("hampton", "12004866")}
+    pt = rows[("portsmouth", "123-456")]
+    assert pt["zoning"] == "R-75" and pt["prop_address"] == "100 EXAMPLE ST" and pt["tax_area_sqft"] == 10890.0
+    assert pt["source_vintage"] == "2026-02-27"
+    # ids stay distinct across cities: Portsmouth's dashed tax-map number never equals a Hampton PARCELID
+    assert len({g for _, g in rows}) == len(rows)
 
 
-def test_min_digits_per_city():
-    f = lambda g: {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"GPIN": g, "PTM_ID": g}}  # noqa: E731
-    assert [p.gpin for p in P.normalize([f("0891-0090")], Counter(), "portsmouth")] == ["0891-0090"]
+def test_min_digits_per_city_and_layers():
+    f = lambda g: {"type": "Feature", "geometry": FEATS[0]["geometry"], "properties": {"GPIN": g, "TAXMAPNO": g, "PARCELID": g}}  # noqa: E731
+    assert [p.gpin for p in P.normalize([f("123-456")], Counter(), "portsmouth")] == ["123-456"]
+    assert [p.gpin for p in P.normalize([f("4001836")], Counter(), "hampton")] == ["4001836"]
     assert P.normalize([f("0891-0090")], Counter(), "norfolk") == []  # Norfolk ids stay at 10 digits
-    assert all(l.locality == "portsmouth" for k, l in C.LAYERS.items() if k.startswith("pt_"))
-    assert "State = 'VIRGINIA'" in C.LAYERS["pt_nrhp_points"].where and C.LAYERS["pt_usda_soils"].url == "VA715"
+    for prefix, city in (("pt_", "portsmouth"), ("ht_", "hampton")):
+        assert all(l.locality == city for k, l in C.LAYERS.items() if k.startswith(prefix))
+    assert "State = 'VIRGINIA'" in C.LAYERS["ht_nrhp_points"].where  # Hampton is also in South Carolina
+    assert C.LAYERS["ht_vdot_adt"].where.count("'City of Hampton'") == 2  # not Northampton / Southampton

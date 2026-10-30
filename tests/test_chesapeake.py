@@ -176,7 +176,7 @@ def test_city_layers_share_national_behaviour_and_keys():
     assert C._base("ches_nrhp_polygons") == "nrhp_polygons" and C._base("rpa") == "rpa"
     assert all(l.locality == "chesapeake" for k, l in C.LAYERS.items() if k.startswith("ches_"))
     assert all(l.locality == "norfolk" for k, l in C.LAYERS.items() if k.startswith("nf_"))
-    assert all(l.locality == "virginia_beach" for k, l in C.LAYERS.items() if not k.startswith(("ches_", "nf_", "pt_", "sf_")))
+    assert all(l.locality == "virginia_beach" for k, l in C.LAYERS.items() if not k.startswith(("ches_", "nf_", "pt_", "sf_", "ht_")))
     assert C.ENVELOPES["chesapeake"] != C.ENVELOPES["virginia_beach"] != C.ENVELOPES["norfolk"]
     assert C._base("nf_usda_soils") == "usda_soils" and C.LAYERS["nf_usda_soils"].url == "VA715"
     assert "State = 'VIRGINIA'" in C.LAYERS["nf_nrhp_points"].where  # not Norfolk County, Massachusetts

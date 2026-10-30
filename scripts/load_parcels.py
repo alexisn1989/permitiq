@@ -197,6 +197,10 @@ def main(argv=None) -> int:
                                         P.PARCEL_OUT_FIELDS.get(args.locality, "*"))
             versions = {(f.get("properties") or {}).get("dataVersion") for f in raw} - {None}
             vintage = ", ".join(sorted(versions)) if versions else vintage  # a statewide copy's own data version
+            updated = [u for u in ((f.get("properties") or {}).get("LASTUPDATE") for f in raw) if isinstance(u, (int, float))]
+            if updated and not versions:  # the regional layer's newest LASTUPDATE (epoch ms) as its date
+                from datetime import datetime, timezone
+                vintage = datetime.fromtimestamp(max(updated) / 1000, timezone.utc).date().isoformat()
             source = args.url
         if not raw:
             raise LoadError("no features; nothing written")

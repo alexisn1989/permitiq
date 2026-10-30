@@ -158,8 +158,11 @@ PT_ENVELOPE = {"geometry": '{"xmin":-76.43,"ymin":36.78,"xmax":-76.28,"ymax":36.
 # Suffolk: the city parcel layer's extent (2026-10-30) with a small margin
 SF_ENVELOPE = {"geometry": '{"xmin":-76.94,"ymin":36.54,"xmax":-76.39,"ymax":36.94,"spatialReference":{"wkid":4326}}',
                "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
+# Hampton: the HRGEO parcels' extent for FIPS 650 (2026-10-30) with a small margin
+HT_ENVELOPE = {"geometry": '{"xmin":-76.46,"ymin":36.97,"xmax":-76.26,"ymax":37.12,"spatialReference":{"wkid":4326}}',
+               "geometryType": "esriGeometryEnvelope", "inSR": "4326", "spatialRel": "esriSpatialRelIntersects"}
 ENVELOPES = {"virginia_beach": VB_ENVELOPE, "chesapeake": CHES_ENVELOPE, "norfolk": NF_ENVELOPE,
-             "portsmouth": PT_ENVELOPE, "suffolk": SF_ENVELOPE}
+             "portsmouth": PT_ENVELOPE, "suffolk": SF_ENVELOPE, "hampton": HT_ENVELOPE}
 
 # Chesapeake (city GIS profiled 2026-10-28; layers measured only on Chesapeake parcels). Its RPA buffer is
 # drawn as polygons (100 / 50 ft from the city's perennial-water layer), so RPA acres are measured here.
@@ -384,11 +387,41 @@ SUFFOLK_LAYERS = (
           where="JURISDICTION_DESC = 'Suffolk'", fmt=LAYERS["vdot_syip_points"].fmt, locality="suffolk"),
 )
 LAYERS.update({l.key: l for l in SUFFOLK_LAYERS})
+
+# Hampton: federal and state layers only -- the city's own GIS server refuses this environment's connections
+# (2026-10-30). Names confirmed against each service: NRHP has a Hampton in VA and SC; VDOT also lists
+# Northampton / Southampton counties and "Hampton Roads District-wide", so only exact names are used.
+HAMPTON_LAYERS = (
+    Layer("ht_usda_soils", "VA715", "polygon_share", "Soils (USDA soil survey)",
+          LAYERS["usda_soils"].meaning, LAYERS["usda_soils"].attrs, "muname", classification=True, source="sda",
+          locality="hampton"),
+    Layer("ht_nwi_wetlands", LAYERS["nwi_wetlands"].url, "polygon_share", LAYERS["nwi_wetlands"].label,
+          LAYERS["nwi_wetlands"].meaning, LAYERS["nwi_wetlands"].attrs, "WETLAND_TYPE", bbox=True,
+          where=LAYERS["nwi_wetlands"].where, locality="hampton"),
+    Layer("ht_nrhp_polygons", LAYERS["nrhp_polygons"].url, "polygon_share", LAYERS["nrhp_polygons"].label,
+          LAYERS["nrhp_polygons"].meaning, LAYERS["nrhp_polygons"].attrs, "RESNAME",
+          where="County = 'Hampton' AND State = 'VIRGINIA'", locality="hampton"),
+    Layer("ht_nrhp_points", LAYERS["nrhp_points"].url, "point_near", LAYERS["nrhp_points"].label,
+          LAYERS["nrhp_points"].meaning, LAYERS["nrhp_points"].attrs, near_ft=500,
+          where="County = 'Hampton' AND State = 'VIRGINIA'", fmt=LAYERS["nrhp_points"].fmt, locality="hampton"),
+    Layer("ht_vdot_adt", LAYERS["vdot_adt"].url, "line_crossing", LAYERS["vdot_adt"].label,
+          LAYERS["vdot_adt"].meaning, LAYERS["vdot_adt"].attrs, near_ft=300,
+          where="FROM_JURISDICTION = 'City of Hampton' OR TO_JURISDICTION = 'City of Hampton'",
+          fmt=LAYERS["vdot_adt"].fmt, locality="hampton"),
+    Layer("ht_vdot_syip_lines", LAYERS["vdot_syip_lines"].url, "line_crossing", LAYERS["vdot_syip_lines"].label,
+          LAYERS["vdot_syip_lines"].meaning, LAYERS["vdot_syip_lines"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Hampton'", fmt=LAYERS["vdot_syip_lines"].fmt, locality="hampton"),
+    Layer("ht_vdot_syip_points", LAYERS["vdot_syip_points"].url, "point_near", LAYERS["vdot_syip_points"].label,
+          LAYERS["vdot_syip_points"].meaning, LAYERS["vdot_syip_points"].attrs, near_ft=1000,
+          where="JURISDICTION_DESC = 'Hampton'", fmt=LAYERS["vdot_syip_points"].fmt, locality="hampton"),
+)
+LAYERS.update({l.key: l for l in HAMPTON_LAYERS})
 # the same national layer under another city's key: soil summary, NRHP boxes and wording behave the same
 BASE_KEY = {**{l.key: l.key.removeprefix("ches_") for l in CHESAPEAKE_LAYERS},
             **{l.key: l.key.removeprefix("nf_") for l in NORFOLK_LAYERS},
             **{l.key: l.key.removeprefix("pt_") for l in PORTSMOUTH_LAYERS},
-            **{l.key: l.key.removeprefix("sf_") for l in SUFFOLK_LAYERS}}
+            **{l.key: l.key.removeprefix("sf_") for l in SUFFOLK_LAYERS},
+            **{l.key: l.key.removeprefix("ht_") for l in HAMPTON_LAYERS}}
 
 BOARD_LAYERS = {
     "cbpa": (f"{PLAN}/3", "Chesapeake Bay Preservation Area Board actions"),
@@ -660,7 +693,7 @@ def public_constraints(conn, gpins: list[str]) -> dict:
         boards = {}  # the board histories are Virginia Beach's
         boards_note = "Board histories are loaded for Virginia Beach only."
     not_covered = []
-    if cities & {"virginia_beach", "norfolk", "portsmouth"}:  # none of them publishes its sewer / water lines
+    if cities & {"virginia_beach", "norfolk", "portsmouth", "hampton"}:  # none publishes (or serves us) its lines
         not_covered.append("sewer / water capacity and pipe locations (not published)")
     if cities & {"chesapeake", "suffolk"}:
         not_covered.append("sewer / water capacity (not published; mains and service areas are shown as published)")
