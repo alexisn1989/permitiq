@@ -130,9 +130,10 @@ const filters = {
 // ---------- map ----------
 const map = L.map("map", { zoomControl: false }).setView([36.85, -76.15], 10);
 L.control.zoom({ position: "bottomright" }).addTo(map);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-  attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+// OpenStreetMap's standard tiles need no API key (CARTO's basemaps began requiring one);
+// style.css darkens the tile pane only, so markers and flood polygons keep their colours.
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   maxZoom: 19,
 }).addTo(map);
 

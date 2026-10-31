@@ -468,3 +468,6 @@ body.lead-page { display: block; height: auto; min-height: 100%; }
 /* review history on the lead screen */
 .history { margin: 0.5rem 0; padding-left: 1.2rem; }
 .history li { margin-bottom: 0.4rem; }
+
+/* Dark basemap from OpenStreetMap's standard tiles: invert the tile pane only */
+#map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9); }
