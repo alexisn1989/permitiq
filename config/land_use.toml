@@ -1,0 +1,43 @@
+# Stage 2: land-use decisions (VoteIQ Council votes) -> building permits.
+#
+# Ships EMPTY on purpose. Fill it only from observed values:
+#   python scripts/profile_land_use_export.py --file vb_council_votes.jsonl
+# scripts/ingest_land_use_decisions.py refuses to run while [votes] or
+# [classify].land_use_patterns are empty, and the linker refuses until
+# [coverage] names a verified backfill run.
+#
+# Approval is NEVER inferred from these maps. 'complete' is not 'approved':
+# Council may vote on a motion to deny or defer, and thresholds differ by
+# action. Only scripts/review_land_use.py (human review with evidence) can
+# mark a decision approved.
+
+[votes]
+# observed vote string -> yes | no | absent | abstain     e.g. { "Aye" = "yes" }
+vote_map = {}
+# observed result string -> complete | defeated | deferred | withdrawn
+result_map = {}
+
+[classify]
+# Title regexes (Python syntax), first match wins; exclude_patterns are checked first.
+#   land_use_patterns = [{ label = "rezoning", pattern = "(?i)change of zoning" }]
+land_use_patterns = []
+exclude_patterns = []
+# Optional, only if the profile shows motion wording in titles. A match can only
+# PROPOSE an outcome (outcome_evidence = proposed_*); review still decides.
+#   motion_patterns = [{ pattern = "(?i)motion to approve", proposes = "approved" }]
+motion_patterns = []
+
+[link]
+link_window_months = 60
+
+[coverage]
+# The VB permit backfill actually run: its --since date and its ingestion_runs.id.
+# ingestion_runs does not record --limit, so the run must be named explicitly.
+# backfill_from = "2024-10-01"
+# backfill_run_id = 0
+max_staleness_days = 14
+
+[new_construction]
+# Same keys as config/flood_report.toml [cohort].include.
+include = []
+min_n = 20

@@ -1,12 +1,12 @@
 """Phase 7 tests: the read-only API (everything except GeoJSON export, see
 test_geojson.py). Uses an isolated temp SQLite DB for every test -- never the
 real permits.db in this repo. db_module.DB_PATH is redirected to a throwaway
-file BEFORE app.py is first imported, so app.py's module-level init_db()
-call (which runs once, at first import, and is schema-only/idempotent even
-if it did hit the real DB) can never touch real data; each test then further
-redirects DB_PATH to its own tmp_path DB via the isolated_db fixture, and
-every route in app.py resolves db_module.DB_PATH fresh on each request via
-db_module.db(), so the redirect fully takes effect with no need to reload
+path BEFORE app.py is first imported (belt and braces: importing app.py no
+longer touches any file -- it has no import-time init_db()); each test then
+redirects DB_PATH to its own tmp_path DB via the isolated_db fixture, which
+creates the schema with init_db() exactly as a CLI writer would. Every route
+in app.py resolves db_module.DB_PATH fresh on each request via
+db_module.db_readonly(), so the redirect takes effect with no need to reload
 the app module.
 """
 
@@ -100,7 +100,7 @@ def seeded_db(isolated_db):
 def test_health_ok(seeded_db):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "database": "ok"}
+    assert resp.json() == {"status": "ok", "database": "ok", "schema_version": db_module.SCHEMA_VERSION}
 
 
 def test_health_checks_required_tables(isolated_db):
